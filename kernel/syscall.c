@@ -130,6 +130,7 @@ static uint64 (*syscalls[])(void) = {
 [SYS_trace]   sys_trace,
 };
 
+// Index names by syscall number, matching the dispatch table above.
 static char *syscallnames[] = {
 [SYS_fork]    "fork",
 [SYS_exit]    "exit",
@@ -166,6 +167,7 @@ syscall(void)
     // Use num to lookup the system call function for num, call it,
     // and store its return value in p->trapframe->a0
     p->trapframe->a0 = syscalls[num]();
+    // Log after dispatch: a0 holds the result and trace() has updated the mask.
     if(p->tracemask & (1U << num))
       printf("syscall %s -> %ld\n", syscallnames[num], p->trapframe->a0);
   } else {

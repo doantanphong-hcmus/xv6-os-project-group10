@@ -92,6 +92,7 @@ sys_uptime(void)
   return xticks;
 }
 
+// Set the calling process's trace mask; zero disables tracing.
 uint64
 sys_trace(void)
 {

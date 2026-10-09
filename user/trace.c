@@ -3,6 +3,7 @@
 #include "kernel/stat.h"
 #include "user/user.h"
 
+// Run a command with tracing enabled for selected system calls.
 int
 main(int argc, char *argv[])
 {
@@ -14,6 +15,7 @@ main(int argc, char *argv[])
     exit(1);
   }
 
+  // Reject overflow beyond the signed 32-bit limit (0x7fffffff).
   for(char *s = argv[1]; *s; s++){
     if(*s < '0' || *s > '9' || mask > (0x7fffffff - (*s - '0')) / 10){
       fprintf(2, "%s: invalid mask\n", argv[0]);
@@ -22,6 +24,7 @@ main(int argc, char *argv[])
     mask = mask * 10 + (*s - '0');
   }
 
+  // Enable tracing before exec, which preserves the process's mask.
   if (trace(mask) < 0) {
     fprintf(2, "%s: trace failed\n", argv[0]);
     exit(1);
