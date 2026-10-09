@@ -110,7 +110,6 @@ static struct proc*
 allocproc(void)
 {
   struct proc *p;
-
   for(p = proc; p < &proc[NPROC]; p++) {
     acquire(&p->lock);
     if(p->state == UNUSED) {
@@ -124,7 +123,7 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
-
+  p->tracemask = 0;
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
     freeproc(p);
@@ -282,7 +281,6 @@ fork(void)
   int i, pid;
   struct proc *np;
   struct proc *p = myproc();
-
   // Allocate process.
   if((np = allocproc()) == 0){
     return -1;
@@ -295,7 +293,7 @@ fork(void)
     return -1;
   }
   np->sz = p->sz;
-
+  np->tracemask = p->tracemask;  
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
 

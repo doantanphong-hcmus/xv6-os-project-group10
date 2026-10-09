@@ -91,3 +91,12 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+//
+uint64
+sys_trace(void)
+{
+  int mask;
+  argint(0, &mask);          // nếu argint trong repo trả về int, hãy kiểm tra < 0 thì return -1
+  myproc()->tracemask = mask;
+  return 0;
+}

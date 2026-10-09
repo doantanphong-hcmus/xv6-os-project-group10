@@ -47,12 +47,8 @@ endif
 ifeq ($(LAB),lock)
 OBJS += \
 	$K/stats.o\
-	$K/sprintf.o
-endif
 
 
-ifeq ($(LAB),net)
-OBJS += \
 	$K/e1000.o \
 	$K/net.o \
 	$K/pci.o
@@ -85,7 +81,7 @@ LD = $(TOOLPREFIX)ld
 OBJCOPY = $(TOOLPREFIX)objcopy
 OBJDUMP = $(TOOLPREFIX)objdump
 
-CFLAGS = -Wall -Werror -O -fno-omit-frame-pointer -ggdb -gdwarf-2
+CFLAGS = -Wall -O -fno-omit-frame-pointer -ggdb -gdwarf-2
 
 ifdef LAB
 LABUPPER = $(shell echo $(LAB) | tr a-z A-Z)
@@ -194,7 +190,7 @@ UPROGS=\
 	$U/_grind\
 	$U/_wc\
 	$U/_zombie\
-
+	$U/_trace\
 
 
 
