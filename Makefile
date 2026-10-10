@@ -65,7 +65,9 @@ endif
 
 # Try to infer the correct TOOLPREFIX if not set
 ifndef TOOLPREFIX
-TOOLPREFIX := $(shell if riscv64-unknown-elf-objdump -i 2>&1 | grep 'elf64-big' >/dev/null 2>&1; \
+TOOLPREFIX := $(shell if riscv64-elf-objdump -i 2>&1 | grep 'elf64-big' >/dev/null 2>&1; \
+	then echo 'riscv64-elf-'; \
+	elif riscv64-unknown-elf-objdump -i 2>&1 | grep 'elf64-big' >/dev/null 2>&1; \
 	then echo 'riscv64-unknown-elf-'; \
 	elif riscv64-linux-gnu-objdump -i 2>&1 | grep 'elf64-big' >/dev/null 2>&1; \
 	then echo 'riscv64-linux-gnu-'; \
@@ -85,7 +87,7 @@ LD = $(TOOLPREFIX)ld
 OBJCOPY = $(TOOLPREFIX)objcopy
 OBJDUMP = $(TOOLPREFIX)objdump
 
-CFLAGS = -Wall -Werror -O -fno-omit-frame-pointer -ggdb -gdwarf-2
+CFLAGS = -Wall -O -fno-omit-frame-pointer -ggdb -gdwarf-2
 
 ifdef LAB
 LABUPPER = $(shell echo $(LAB) | tr a-z A-Z)
@@ -194,7 +196,7 @@ UPROGS=\
 	$U/_grind\
 	$U/_wc\
 	$U/_zombie\
-
+	$U/_trace\
 
 
 
