@@ -91,3 +91,14 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+// Set the calling process's trace mask; zero disables tracing.
+uint64
+sys_trace(void)
+{
+  int mask;
+
+  argint(0, &mask);
+  myproc()->tracemask = mask;
+  return 0;
+}

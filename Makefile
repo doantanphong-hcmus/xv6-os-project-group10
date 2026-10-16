@@ -200,6 +200,7 @@ UPROGS=\
 
 ifeq ($(LAB),syscall)
 UPROGS += \
+	$U/_trace\
 	$U/_attack\
 	$U/_attacktest\
 	$U/_secret
