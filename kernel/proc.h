@@ -17,6 +17,7 @@ struct context {
   uint64 s10;
   uint64 s11;
 };
+struct proc;
 
 // Per-CPU state.
 struct cpu {
@@ -106,3 +107,5 @@ struct proc {
   char name[16];               // Process name (debugging)
   int tracemask;               // Bit n selects syscall n; preserved across exec
 };
+
+extern struct proc proc[NPROC];

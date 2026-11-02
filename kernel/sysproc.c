@@ -5,6 +5,7 @@
 #include "memlayout.h"
 #include "spinlock.h"
 #include "proc.h"
+#include "sysinfo.h"
 
 uint64
 sys_exit(void)
@@ -100,5 +101,36 @@ sys_trace(void)
 
   argint(0, &mask);
   myproc()->tracemask = mask;
+  return 0;
+}
+
+uint64
+sys_sysinfo(void)
+{
+  uint64 uaddr;
+  struct sysinfo info;
+  struct proc *p = myproc();
+
+  argaddr(0, &uaddr);
+
+  // kiểm tra địa chỉ user hợp lệ
+  if (uaddr == 0 || uaddr >= p->sz || uaddr + sizeof(info) > p->sz)
+    return -1;
+
+  // ví dụ đơn giản: đếm process đang không UNUSED
+  info.nproc = 0;
+  for (struct proc *pp = proc; pp < &proc[NPROC]; pp++)
+  {
+    acquire(&pp->lock);
+    if (pp->state != UNUSED)
+      info.nproc++;
+    release(&pp->lock);
+  }
+
+  info.freemem = freemem();
+
+  if (copyout(p->pagetable, uaddr, (char *)&info, sizeof(info)) < 0)
+    return -1;
+
   return 0;
 }
