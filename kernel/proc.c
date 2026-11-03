@@ -124,6 +124,7 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
+  p->sched_count = 0;  // init scheduling counter
 
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
@@ -462,6 +463,7 @@ scheduler(void)
         // to release its lock and then reacquire it
         // before jumping back to us.
         p->state = RUNNING;
+        p->sched_count++;  // tang bo dem scheduling
         c->proc = p;
         swtch(&c->context, &p->context);
 
