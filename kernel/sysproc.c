@@ -5,6 +5,10 @@
 #include "memlayout.h"
 #include "spinlock.h"
 #include "proc.h"
+#include "sleeplock.h"
+#include "fs.h"
+#include "file.h"
+#include "sysinfo.h"
 
 uint64
 sys_exit(void)
@@ -100,5 +104,128 @@ sys_trace(void)
 
   argint(0, &mask);
   myproc()->tracemask = mask;
+  return 0;
+}
+
+extern struct {
+  struct spinlock lock;
+  struct file file[NFILE];
+} ftable;
+
+extern struct proc proc[];
+extern struct spinlock wait_lock;
+
+uint64
+sys_sysinfo(void)
+{
+  uint64 addr;
+  argaddr(0, &addr);
+
+  struct proc *curp = myproc();
+
+  // Validate pointer early: reject null pointer, overflow, or out of process memory bounds
+  if(addr == 0 || addr >= curp->sz || addr + sizeof(struct sysinfo) > curp->sz || addr + sizeof(struct sysinfo) < addr)
+    return -1;
+
+  uint64 freemem_addr = addr + (uint64)&((struct sysinfo *)0)->freemem;
+  uint64 nproc_addr   = addr + (uint64)&((struct sysinfo *)0)->nproc;
+  uint64 nfile_addr   = addr + (uint64)&((struct sysinfo *)0)->nfile;
+  uint64 files_base   = addr + (uint64)&((struct sysinfo *)0)->files[0];
+  uint64 procs_base   = addr + (uint64)&((struct sysinfo *)0)->procs[0];
+
+  int nfile = 0;
+
+  for(int i = 0; i < NFILE; i++){
+    struct sysinfo_file entry;
+    entry.valid    = 0;
+    entry.ftype    = 0;
+    entry.readable = 0;
+    entry.writable = 0;
+    entry.ref      = 0;
+    entry.npid     = 0;
+    for(int k = 0; k < SYSINFO_MAX_PIDS; k++) entry.pids[k] = 0;
+
+    acquire(&ftable.lock);
+    struct file *f = &ftable.file[i];
+    if(f->ref > 0){
+      nfile++;
+      entry.valid    = 1;
+      entry.ftype    = (int)f->type;
+      entry.readable = f->readable;
+      entry.writable = f->writable;
+      entry.ref      = f->ref;
+    }
+    release(&ftable.lock);
+
+    if(entry.valid){
+      for(struct proc *p = proc; p < &proc[NPROC]; p++){
+        for(int fd = 0; fd < NOFILE; fd++){
+          if(p->ofile[fd] == f){
+            if(entry.npid < SYSINFO_MAX_PIDS){
+              entry.pids[entry.npid++] = p->pid;
+            }
+            break;
+          }
+        }
+      }
+    }
+
+    uint64 dst = files_base + (uint64)i * sizeof(struct sysinfo_file);
+    if(copyout(curp->pagetable, dst, (char*)&entry, sizeof(struct sysinfo_file)) < 0)
+      return -1;
+  }
+
+  if(copyout(curp->pagetable, nfile_addr, (char*)&nfile, sizeof(int)) < 0)
+    return -1;
+
+  uint64 nproc = 0;
+
+  for(int i = 0; i < NPROC; i++){
+    struct proc *p = &proc[i];
+    struct sysinfo_proc entry;
+    entry.valid       = 0;
+    entry.pid         = 0;
+    entry.ppid        = 0;
+    entry.state       = 0;
+    entry.sched_count = 0;
+    entry.nfd         = 0;
+    for(int k = 0; k < SYSINFO_MAX_FDS; k++) entry.fds[k] = 0;
+
+    acquire(&p->lock);
+    if(p->state != UNUSED){
+      nproc++;
+      entry.valid       = 1;
+      entry.pid         = p->pid;
+      entry.state       = (int)p->state;
+      entry.sched_count = p->sched_count;
+      for(int fd = 0; fd < NOFILE; fd++){
+        if(p->ofile[fd] != 0 && entry.nfd < SYSINFO_MAX_FDS){
+          entry.fds[entry.nfd++] = fd;
+        }
+      }
+      struct proc *par = p->parent;
+      release(&p->lock);
+
+      if(par != 0){
+        acquire(&wait_lock);
+        entry.ppid = par->pid;
+        release(&wait_lock);
+      }
+    } else {
+      release(&p->lock);
+    }
+
+    uint64 dst = procs_base + (uint64)i * sizeof(struct sysinfo_proc);
+    if(copyout(curp->pagetable, dst, (char*)&entry, sizeof(struct sysinfo_proc)) < 0)
+      return -1;
+  }
+
+  if(copyout(curp->pagetable, nproc_addr, (char*)&nproc, sizeof(uint64)) < 0)
+    return -1;
+
+  uint64 freemem = 0;
+  if(copyout(curp->pagetable, freemem_addr, (char*)&freemem, sizeof(uint64)) < 0)
+    return -1;
+
   return 0;
 }

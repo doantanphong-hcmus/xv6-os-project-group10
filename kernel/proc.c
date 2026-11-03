@@ -126,6 +126,7 @@ found:
   p->state = USED;
   // Reset reused slots; new processes, including fork children, start untraced.
   p->tracemask = 0;
+  p->sched_count = 0;
 
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
@@ -464,6 +465,7 @@ scheduler(void)
         // to release its lock and then reacquire it
         // before jumping back to us.
         p->state = RUNNING;
+        p->sched_count++;
         c->proc = p;
         swtch(&c->context, &p->context);
 
