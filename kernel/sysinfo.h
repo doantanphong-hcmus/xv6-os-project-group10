@@ -41,3 +41,4 @@ struct sysinfo {
   struct sysinfo_file files[100];    // NFILE = 100
   struct sysinfo_proc procs[64];     // NPROC = 64
 };
+
