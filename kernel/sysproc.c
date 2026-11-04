@@ -102,3 +102,14 @@ sys_trace(void)
   myproc()->tracemask = mask;
   return 0;
 }
+
+uint64
+sys_sysinfo(void)
+{
+  uint64 addr;
+
+  argaddr(0, &addr);
+  if(addr == 0)
+    return -1;
+  return getsysinfo(addr);
+}
