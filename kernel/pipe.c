@@ -35,6 +35,7 @@ pipealloc(struct file **f0, struct file **f1)
   pi->nwrite = 0;
   pi->nread = 0;
   initlock(&pi->lock, "pipe");
+  acquire(&ftable.lock);
   (*f0)->type = FD_PIPE;
   (*f0)->readable = 1;
   (*f0)->writable = 0;
@@ -43,6 +44,7 @@ pipealloc(struct file **f0, struct file **f1)
   (*f1)->readable = 0;
   (*f1)->writable = 1;
   (*f1)->pipe = pi;
+  release(&ftable.lock);
   return 0;
 
  bad:

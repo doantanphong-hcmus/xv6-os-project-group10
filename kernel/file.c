@@ -14,10 +14,7 @@
 #include "proc.h"
 
 struct devsw devsw[NDEV];
-struct {
-  struct spinlock lock;
-  struct file file[NFILE];
-} ftable;
+struct ftable ftable;
 
 void
 fileinit(void)
@@ -34,6 +31,8 @@ filealloc(void)
   acquire(&ftable.lock);
   for(f = ftable.file; f < ftable.file + NFILE; f++){
     if(f->ref == 0){
+      // A reserved slot may appear in sysinfo before open or pipe completes.
+      memset(f, 0, sizeof(*f));
       f->ref = 1;
       release(&ftable.lock);
       return f;

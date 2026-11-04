@@ -35,7 +35,7 @@ argfd(int n, int *pfd, struct file **pf)
 }
 
 // Allocate a file descriptor for the given file.
-// Takes over file reference from caller on success.
+// Caller holds ftable.lock; takes over its reference on success.
 static int
 fdalloc(struct file *f)
 {
@@ -59,9 +59,13 @@ sys_dup(void)
 
   if(argfd(0, 0, &f) < 0)
     return -1;
-  if((fd=fdalloc(f)) < 0)
-    return -1;
+  // Own the extra reference before publishing the new descriptor.
   filedup(f);
+  acquire(&ftable.lock);
+  fd = fdalloc(f);
+  release(&ftable.lock);
+  if(fd < 0)
+    fileclose(f);
   return fd;
 }
 
@@ -102,7 +106,9 @@ sys_close(void)
 
   if(argfd(0, &fd, &f) < 0)
     return -1;
+  acquire(&ftable.lock);
   myproc()->ofile[fd] = 0;
+  release(&ftable.lock);
   fileclose(f);
   return 0;
 }
@@ -341,7 +347,10 @@ sys_open(void)
     return -1;
   }
 
-  if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
+  f = filealloc();
+  acquire(&ftable.lock);
+  if(f == 0 || (fd = fdalloc(f)) < 0){
+    release(&ftable.lock);
     if(f)
       fileclose(f);
     iunlockput(ip);
@@ -359,6 +368,7 @@ sys_open(void)
   f->ip = ip;
   f->readable = !(omode & O_WRONLY);
   f->writable = (omode & O_WRONLY) || (omode & O_RDWR);
+  release(&ftable.lock);
 
   if((omode & O_TRUNC) && ip->type == T_FILE){
     itrunc(ip);
@@ -486,17 +496,22 @@ sys_pipe(void)
   if(pipealloc(&rf, &wf) < 0)
     return -1;
   fd0 = -1;
+  acquire(&ftable.lock);
   if((fd0 = fdalloc(rf)) < 0 || (fd1 = fdalloc(wf)) < 0){
     if(fd0 >= 0)
       p->ofile[fd0] = 0;
+    release(&ftable.lock);
     fileclose(rf);
     fileclose(wf);
     return -1;
   }
+  release(&ftable.lock);
   if(copyout(p->pagetable, fdarray, (char*)&fd0, sizeof(fd0)) < 0 ||
      copyout(p->pagetable, fdarray+sizeof(fd0), (char *)&fd1, sizeof(fd1)) < 0){
+    acquire(&ftable.lock);
     p->ofile[fd0] = 0;
     p->ofile[fd1] = 0;
+    release(&ftable.lock);
     fileclose(rf);
     fileclose(wf);
     return -1;

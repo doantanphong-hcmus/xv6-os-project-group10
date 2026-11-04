@@ -5,6 +5,9 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fs.h"
+#include "sleeplock.h"
+#include "file.h"
 
 struct cpu cpus[NCPU];
 
@@ -304,7 +307,7 @@ fork(void)
   // Cause fork to return 0 in the child.
   np->trapframe->a0 = 0;
 
-  // increment reference counts on open file descriptors.
+  // np->lock keeps the child's descriptors out of snapshots during the copy.
   for(i = 0; i < NOFILE; i++)
     if(p->ofile[i])
       np->ofile[i] = filedup(p->ofile[i]);
@@ -357,8 +360,11 @@ exit(int status)
   for(int fd = 0; fd < NOFILE; fd++){
     if(p->ofile[fd]){
       struct file *f = p->ofile[fd];
-      fileclose(f);
+      // Detach before fileclose() can recycle the slot or sleep.
+      acquire(&ftable.lock);
       p->ofile[fd] = 0;
+      release(&ftable.lock);
+      fileclose(f);
     }
   }
 
