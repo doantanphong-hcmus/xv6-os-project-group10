@@ -1,5 +1,7 @@
+#include "sysinfo.h"
+
 struct file {
-  enum { FD_NONE, FD_PIPE, FD_INODE, FD_DEVICE } type;
+  enum filetype type;
   int ref; // reference count
   char readable;
   char writable;
@@ -8,6 +10,12 @@ struct file {
   uint off;          // FD_INODE
   short major;       // FD_DEVICE
 };
+
+// Protects ref, type, access flags, and published descriptor updates.
+extern struct ftable {
+  struct spinlock lock;
+  struct file file[NFILE];
+} ftable;
 
 #define major(dev)  ((dev) >> 16 & 0xFFFF)
 #define minor(dev)  ((dev) & 0xFFFF)

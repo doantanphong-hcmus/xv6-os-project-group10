@@ -13,19 +13,14 @@ putc(int fd, char c)
 }
 
 static void
-printint(int fd, int xx, int base, int sgn)
+printint(int fd, uint64 x, int base, int sgn)
 {
-  char buf[16];
+  char buf[24];
   int i, neg;
-  uint x;
 
-  neg = 0;
-  if(sgn && xx < 0){
-    neg = 1;
-    x = -xx;
-  } else {
-    x = xx;
-  }
+  neg = sgn && (long long)x < 0;
+  if(neg)
+    x = 0 - x; // Unsigned subtraction also handles the smallest signed value.
 
   i = 0;
   do{
@@ -76,7 +71,7 @@ vprintf(int fd, const char *fmt, va_list ap)
         printint(fd, va_arg(ap, uint64), 10, 1);
         i += 2;
       } else if(c0 == 'u'){
-        printint(fd, va_arg(ap, int), 10, 0);
+        printint(fd, va_arg(ap, uint), 10, 0);
       } else if(c0 == 'l' && c1 == 'u'){
         printint(fd, va_arg(ap, uint64), 10, 0);
         i += 1;
@@ -84,7 +79,7 @@ vprintf(int fd, const char *fmt, va_list ap)
         printint(fd, va_arg(ap, uint64), 10, 0);
         i += 2;
       } else if(c0 == 'x'){
-        printint(fd, va_arg(ap, int), 16, 0);
+        printint(fd, va_arg(ap, uint), 16, 0);
       } else if(c0 == 'l' && c1 == 'x'){
         printint(fd, va_arg(ap, uint64), 16, 0);
         i += 1;
