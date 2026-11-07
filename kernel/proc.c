@@ -5,6 +5,9 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fs.h"
+#include "sleeplock.h"
+#include "file.h"
 
 struct cpu cpus[NCPU];
 
@@ -25,6 +28,10 @@ extern char trampoline[]; // trampoline.S
 // memory model when using p->parent.
 // must be acquired before any p->lock.
 struct spinlock wait_lock;
+
+// The snapshot exceeds one kernel stack page; serialize access to its buffer.
+static struct sysinfo info;
+static struct sleeplock sysinfo_lock;
 
 // Allocate a page for each process's kernel stack.
 // Map it high in memory, followed by an invalid
@@ -51,6 +58,7 @@ procinit(void)
   
   initlock(&pid_lock, "nextpid");
   initlock(&wait_lock, "wait_lock");
+  initsleeplock(&sysinfo_lock, "sysinfo");
   for(p = proc; p < &proc[NPROC]; p++) {
       initlock(&p->lock, "proc");
       p->state = UNUSED;
@@ -124,6 +132,7 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
+  p->nsched = 0;
   // Reset reused slots; new processes, including fork children, start untraced.
   p->tracemask = 0;
 
@@ -304,7 +313,7 @@ fork(void)
   // Cause fork to return 0 in the child.
   np->trapframe->a0 = 0;
 
-  // increment reference counts on open file descriptors.
+  // np->lock keeps the child's descriptors out of snapshots during the copy.
   for(i = 0; i < NOFILE; i++)
     if(p->ofile[i])
       np->ofile[i] = filedup(p->ofile[i]);
@@ -357,8 +366,11 @@ exit(int status)
   for(int fd = 0; fd < NOFILE; fd++){
     if(p->ofile[fd]){
       struct file *f = p->ofile[fd];
-      fileclose(f);
+      // Detach before fileclose() can recycle the slot or sleep.
+      acquire(&ftable.lock);
       p->ofile[fd] = 0;
+      release(&ftable.lock);
+      fileclose(f);
     }
   }
 
@@ -464,6 +476,7 @@ scheduler(void)
         // to release its lock and then reacquire it
         // before jumping back to us.
         p->state = RUNNING;
+        p->nsched++;
         c->proc = p;
         swtch(&c->context, &p->context);
 
@@ -664,6 +677,53 @@ either_copyin(void *dst, int user_src, uint64 src, uint64 len)
     memmove(dst, (char*)src, len);
     return 0;
   }
+}
+
+int
+getsysinfo(uint64 addr)
+{
+  struct proc *p;
+
+  acquiresleep(&sysinfo_lock);
+  memset(&info, 0, sizeof(info));
+
+  // Lock order: wait_lock, all proc locks in table order, then ftable.lock.
+  acquire(&wait_lock);
+  for(p = proc; p < &proc[NPROC]; p++)
+    acquire(&p->lock);
+  acquire(&ftable.lock);
+
+  for(int i = 0; i < NFILE; i++){
+    struct file *f = &ftable.file[i];
+    if(f->ref == 0)
+      continue;
+    info.nfile++;
+    info.files[i].type = f->type;
+    info.files[i].ref = f->ref;
+    info.files[i].readable = f->readable;
+    info.files[i].writable = f->writable;
+  }
+  for(p = proc; p < &proc[NPROC]; p++){
+    if(p->state == UNUSED)
+      continue;
+    struct procinfo *pi = &info.procs[info.nproc++];
+    pi->pid = p->pid;
+    pi->state = p->state;
+    pi->ppid = p->parent ? p->parent->pid : 0;
+    pi->nsched = p->nsched;
+    for(int fd = 0; fd < NOFILE; fd++)
+      if(p->ofile[fd])
+        pi->file_id[fd] = p->ofile[fd] - ftable.file + 1;
+  }
+
+  release(&ftable.lock);
+  for(int i = NPROC - 1; i >= 0; i--)
+    release(&proc[i].lock);
+  release(&wait_lock);
+
+  int ret = copyout(myproc()->pagetable, addr, (char *)&info, sizeof(info));
+  releasesleep(&sysinfo_lock);
+  return ret;
 }
 
 // Print a process listing to console.  For debugging.
