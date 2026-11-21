@@ -720,7 +720,7 @@ getsysinfo(uint64 addr)
   for(int i = NPROC - 1; i >= 0; i--)
     release(&proc[i].lock);
   release(&wait_lock);
-
+  info.freemem = kfreemem();
   int ret = copyout(myproc()->pagetable, addr, (char *)&info, sizeof(info));
   releasesleep(&sysinfo_lock);
   return ret;

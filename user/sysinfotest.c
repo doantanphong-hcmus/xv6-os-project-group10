@@ -2,7 +2,8 @@
 #include "kernel/fcntl.h"
 #include "kernel/sysinfo.h"
 #include "user/user.h"
-
+#define PAGE 4096
+#define MAXMEM (128*1024*1024)  // 128 MB
 // The result spans multiple pages; keep it off the one-page user stack.
 static struct sysinfo info;
 
@@ -49,6 +50,7 @@ snapshot(void)
   check(sysinfo(&info) == 0, "valid sysinfo call");
   check(info.nfile >= 0 && info.nfile <= NFILE, "file count bounds");
   check(info.nproc > 0 && info.nproc <= NPROC, "process count bounds");
+  check(info.freemem > 0 && info.freemem <= MAXMEM && info.freemem % PAGE == 0, "free memory is a non-zero multiple of PGSIZE");
   for(int i = 0; i < info.nproc; i++){
     struct procinfo *p = &info.procs[i];
     check(p->pid > 0, "invalid PID");
@@ -153,7 +155,7 @@ static void
 testfiles(void)
 {
   char first[3], second[3];
-  printf("\n[2/10] Open, dup, independent open, close and modes\n");
+  printf("\n[2/11] Open, dup, independent open, close and modes\n");
   snapshot();
   int baseline = info.nfile;
   printf("  Baseline: %d open objects\n", baseline);
@@ -243,7 +245,7 @@ testpipe(void)
 {
   int p[2];
   char c;
-  printf("\n[3/10] Pipe endpoints and cleanup\n");
+  printf("\n[3/11] Pipe endpoints and cleanup\n");
   snapshot();
   int baseline = info.nfile;
   printf("  -> pipe(): expect two objects, one read end and one write end\n");
@@ -273,7 +275,7 @@ static void
 testlimits(void)
 {
   int fds[NOFILE], p[2], n = 0, used = 0;
-  printf("\n[4/10] Full descriptor table and failed-allocation cleanup\n");
+  printf("\n[4/11] Full descriptor table and failed-allocation cleanup\n");
   snapshot();
   int baseline = info.nfile;
   for(int fd = 0; fd < NOFILE; fd++)
@@ -327,7 +329,7 @@ testfork(void)
 {
   int ready[2], go[2], status;
   char c;
-  printf("\n[5/10] Fork, scheduling, exit and wait\n");
+  printf("\n[5/11] Fork, scheduling, exit and wait\n");
   snapshot();
   int nproc = info.nproc, nfile = info.nfile, parent = getpid();
   printf("  Baseline: parent pid=%d, processes=%d, open objects=%d\n", parent, nproc, nfile);
@@ -399,7 +401,7 @@ testowners(void)
 {
   int gate[2], pids[16], status;
   char tokens[16] = {0}, c;
-  printf("\n[6/10] One file object shared by 17 processes\n");
+  printf("\n[6/11] One file object shared by 17 processes\n");
   snapshot();
   int nproc = info.nproc, nfile = info.nfile;
   int fd = open("README", O_RDONLY);
@@ -442,7 +444,7 @@ testowners(void)
 static void
 testconcurrent(void)
 {
-  printf("\n[7/10] Snapshots while another process opens and closes files\n");
+  printf("\n[7/11] Snapshots while another process opens and closes files\n");
   snapshot();
   int nproc = info.nproc, nfile = info.nfile;
   int pid = fork(), status;
@@ -482,7 +484,7 @@ testfiletable(void)
   int workers = 0, opened = 0, status;
   char tokens[NPROC] = {0}, c;
 
-  printf("\n[8/10] Fill the GLOBAL file table, not just one descriptor table\n");
+  printf("\n[8/11] Fill the GLOBAL file table, not just one descriptor table\n");
   snapshot();
   int nfile = info.nfile, nproc = info.nproc;
   check(pipe(ready) == 0 && pipe(gate) == 0, "file table test pipes");
@@ -570,7 +572,7 @@ testproctable(void)
   int gate[2], pids[NPROC], n = 0, status;
   char tokens[NPROC] = {0}, c;
 
-  printf("\n[9/10] Fill the process table and reuse a released slot\n");
+  printf("\n[9/11] Fill the process table and reuse a released slot\n");
   snapshot();
   int nproc = info.nproc, nfile = info.nfile;
   check(pipe(gate) == 0, "process table gate");
@@ -640,7 +642,7 @@ testreparent(void)
   int report[2], leave[2], hold[2], orphan, status;
   char c;
 
-  printf("\n[10/10] Parent exits before child: adoption by init\n");
+  printf("\n[10/11] Parent exits before child: adoption by init\n");
   snapshot();
   int nproc = info.nproc, nfile = info.nfile;
   check(pipe(report) == 0 && pipe(leave) == 0 && pipe(hold) == 0, "reparent test pipes");
@@ -718,6 +720,73 @@ testreparent(void)
   expect("open objects after cleanup", info.nfile, nfile);
   printf("sysinfotest: reparent and old-parent cleanup OK\n");
 }
+static int 
+freepages(void)
+{
+  snapshot();
+  return info.freemem / PAGE;
+}
+
+static void 
+testmem(void)
+{
+  enum
+  {
+    N = 16
+  };
+  int p[2], gate[2], status;
+  char c;
+
+  printf("\n[11/11] Free physical memory\n");
+  int base = freepages();
+  printf("  Baseline: %d free pages (%lu bytes)\n", base, info.freemem);
+
+  printf("  -> sbrk(%d pages) and touch every page\n", N);
+  char *mem = sbrk(N * PAGE);
+  check(mem != (char *)-1, "sbrk grow");
+  for (int i = 0; i < N; i++)
+    mem[i * PAGE] = 1;
+  int grown = freepages();
+  // Page-table pages may be needed too, so allow a few extra pages.
+  printf("    free pages: before=%d after=%d used=%d; expected %d..%d\n",
+         base, grown, base - grown, N, N + 3);
+  check(base - grown >= N && base - grown <= N + 3, "free pages after sbrk growth");
+
+  printf("  -> sbrk(-%d pages): data pages must be returned\n", N);
+  check(sbrk(-N * PAGE) != (char *)-1, "sbrk shrink");
+  int shrunk = freepages();
+  expect("pages returned by sbrk shrink", shrunk - grown, N);
+
+  printf("  -> pipe(): one kalloc'd page, returned when both ends close\n");
+  check(pipe(p) == 0, "create pipe");
+  expect("pages used by pipe", shrunk - freepages(), 1);
+  close(p[0]);
+  close(p[1]);
+  expect("free pages after closing pipe", freepages(), shrunk);
+
+  printf("  -> fork a child that stays alive, then let it exit and wait\n");
+  int before = freepages();
+  check(pipe(gate) == 0, "memory test pipe");
+  int pid = fork();
+  check(pid >= 0, "fork memory child");
+  if (pid == 0)
+  {
+    close(gate[1]);
+    check(read(gate[0], &c, 1) == 1, "release memory child");
+    exit(0);
+  }
+  close(gate[0]);
+  int withchild = freepages();
+  printf("    free pages: before fork=%d with child=%d used=%d (pipe + child >= 4)\n",
+         before, withchild, before - withchild);
+  check(before - withchild >= 4, "child and pipe consume memory");
+  check(write(gate[1], "g", 1) == 1, "release memory child");
+  close(gate[1]);
+  expect("wait returned PID", wait(&status), pid);
+  expect("exit status", status, 0);
+  expect("free pages after child is reaped (no leak)", freepages(), before);
+  printf("sysinfotest: free memory OK\n");
+}
 
 int
 main(void)
@@ -727,7 +796,7 @@ main(void)
   printf("+--------------------------------------------------+\n");
   printf("Each step shows an action and its observed result.\n");
   printf("File IDs and diagrams come from the current snapshot.\n");
-  printf("\n[1/10] Arguments and initial system snapshot\n");
+  printf("\n[1/11] Arguments and initial system snapshot\n");
   expect("sysinfo(NULL)", sysinfo(0), -1);
   expect("sysinfo(invalid address)", sysinfo((struct sysinfo *)~(uint64)0), -1);
   snapshot();
@@ -742,8 +811,9 @@ main(void)
   testfiletable();
   testproctable();
   testreparent();
+  testmem();  
   printf("\n+--------------------------------------------------+\n");
-  printf("sysinfotest: ALL TESTS PASSED (10/10 groups)\n");
+  printf("sysinfotest: ALL TESTS PASSED (11/11 groups)\n");
   printf("+--------------------------------------------------+\n");
   exit(0);
 }
