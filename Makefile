@@ -196,6 +196,8 @@ UPROGS=\
 	$U/_wc\
 	$U/_zombie\
 	$U/_sysinfotest\
+	$U/_vmshow\
+	$U/_vmprinttest\
 
 
 
