@@ -19,8 +19,9 @@ int flags2perm(int flags)
     return perm;
 }
 
+// Same as exec(), but print the new page table when printpt != 0.
 int
-exec(char *path, char **argv)
+execpt(char *path, char **argv, int printpt)
 {
   char *s, *last;
   int i, off;
@@ -128,6 +129,9 @@ exec(char *path, char **argv)
   p->trapframe->sp = sp; // initial stack pointer
   proc_freepagetable(oldpagetable, oldsz);
 
+  if(printpt)
+    vmprint(p->pagetable);
+
   return argc; // this ends up in a0, the first argument to main(argc, argv)
 
  bad:
@@ -138,6 +142,12 @@ exec(char *path, char **argv)
     end_op();
   }
   return -1;
+}
+
+int
+exec(char *path, char **argv)
+{
+  return execpt(path, argv, 0);
 }
 
 // Load a program segment into pagetable at virtual address va.

@@ -27,6 +27,7 @@ OBJS = \
   $K/file.o \
   $K/pipe.o \
   $K/exec.o \
+  $K/vmprint.o \
   $K/sysfile.o \
   $K/kernelvec.o \
   $K/plic.o \
@@ -195,6 +196,8 @@ UPROGS=\
 	$U/_wc\
 	$U/_zombie\
 	$U/_sysinfotest\
+	$U/_vmshow\
+	$U/_vmprinttest\
 
 
 

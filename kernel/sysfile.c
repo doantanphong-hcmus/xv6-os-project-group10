@@ -441,8 +441,9 @@ sys_chdir(void)
   return 0;
 }
 
-uint64
-sys_exec(void)
+// Shared by exec and execvm: copy path and argv from user space, then exec.
+static uint64
+doexec(int printpt)
 {
   char path[MAXPATH], *argv[MAXARG];
   int i;
@@ -471,7 +472,7 @@ sys_exec(void)
       goto bad;
   }
 
-  int ret = exec(path, argv);
+  int ret = execpt(path, argv, printpt);
 
   for(i = 0; i < NELEM(argv) && argv[i] != 0; i++)
     kfree(argv[i]);
@@ -482,6 +483,19 @@ sys_exec(void)
   for(i = 0; i < NELEM(argv) && argv[i] != 0; i++)
     kfree(argv[i]);
   return -1;
+}
+
+uint64
+sys_exec(void)
+{
+  return doexec(0);
+}
+
+// Like exec, but print the new page table before returning.
+uint64
+sys_execvm(void)
+{
+  return doexec(1);
 }
 
 uint64
