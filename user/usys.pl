@@ -38,4 +38,5 @@ entry("sleep");
 entry("uptime");
 entry("trace");
 entry("sysinfo");
+entry("pgaccess");
 entry("execvm");

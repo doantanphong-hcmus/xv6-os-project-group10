@@ -113,3 +113,37 @@ sys_sysinfo(void)
     return -1;
   return getsysinfo(addr);
 }
+
+uint64
+sys_pgaccess(void)
+{
+  uint64 addr, result;
+  int n;
+  uint mask = 0;
+  pte_t *ptes[32];
+  struct proc *p = myproc();
+
+  argaddr(0, &addr);
+  argint(1, &n);
+  argaddr(2, &result);
+  addr = PGROUNDDOWN(addr);
+  if(n < 0 || n > 32 || addr >= MAXVA ||
+     (uint64)n > (MAXVA - addr) / PGSIZE)
+    return -1;
+
+  for(int i = 0; i < n; i++){
+    ptes[i] = walk(p->pagetable, addr + i * PGSIZE, 0);
+    if(ptes[i] == 0 || (*ptes[i] & (PTE_V | PTE_U)) != (PTE_V | PTE_U))
+      return -1;
+    if(*ptes[i] & PTE_A)
+      mask |= 1U << i;
+  }
+
+  // Keep access bits intact if copying the result fails.
+  if(copyout(p->pagetable, result, (char *)&mask, sizeof(mask)) < 0)
+    return -1;
+  // userret flushes the TLB before user mode resumes.
+  for(int i = 0; i < n; i++)
+    *ptes[i] &= ~PTE_A;
+  return 0;
+}
