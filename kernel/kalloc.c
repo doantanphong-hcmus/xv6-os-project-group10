@@ -91,8 +91,8 @@ kalloc(void)
   return (void*)r;
 }
 
-// Return the number of free pages in the system.
-uint64 
+// Return the number of free physical memory bytes.
+uint64
 kfreemem(void)
 {
   struct run *r;

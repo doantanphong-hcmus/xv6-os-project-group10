@@ -50,7 +50,8 @@ snapshot(void)
   check(sysinfo(&info) == 0, "valid sysinfo call");
   check(info.nfile >= 0 && info.nfile <= NFILE, "file count bounds");
   check(info.nproc > 0 && info.nproc <= NPROC, "process count bounds");
-  check(info.freemem > 0 && info.freemem <= MAXMEM && info.freemem % PAGE == 0, "free memory is a non-zero multiple of PGSIZE");
+  check(info.freemem <= MAXMEM && info.freemem % PAGE == 0,
+        "free memory bounds and page alignment");
   for(int i = 0; i < info.nproc; i++){
     struct procinfo *p = &info.procs[i];
     check(p->pid > 0, "invalid PID");
@@ -720,14 +721,14 @@ testreparent(void)
   expect("open objects after cleanup", info.nfile, nfile);
   printf("sysinfotest: reparent and old-parent cleanup OK\n");
 }
-static int 
+static int
 freepages(void)
 {
   snapshot();
   return info.freemem / PAGE;
 }
 
-static void 
+static void
 testmem(void)
 {
   enum
@@ -785,6 +786,24 @@ testmem(void)
   expect("wait returned PID", wait(&status), pid);
   expect("exit status", status, 0);
   expect("free pages after child is reaped (no leak)", freepages(), before);
+
+  printf("  -> exhaust memory in a child: sysinfo must accept zero free bytes\n");
+  pid = fork();
+  check(pid >= 0, "fork memory exhaustion child");
+  if(pid == 0){
+    int pages = 0;
+    while(sbrk(PAGE) != (char *)-1)
+      pages++;
+    snapshot();
+    check(info.freemem == 0, "zero free bytes after memory exhaustion");
+    check(sbrk(-pages * PAGE) != (char *)-1, "release exhausted memory");
+    snapshot();
+    check(info.freemem > 0, "free memory recovers after release");
+    exit(0);
+  }
+  expect("wait returned exhaustion child PID", wait(&status), pid);
+  expect("memory exhaustion child exit status", status, 0);
+  expect("free pages after exhaustion child exits", freepages(), before);
   printf("sysinfotest: free memory OK\n");
 }
 
@@ -811,7 +830,7 @@ main(void)
   testfiletable();
   testproctable();
   testreparent();
-  testmem();  
+  testmem();
   printf("\n+--------------------------------------------------+\n");
   printf("sysinfotest: ALL TESTS PASSED (11/11 groups)\n");
   printf("+--------------------------------------------------+\n");
