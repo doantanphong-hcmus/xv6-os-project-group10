@@ -27,6 +27,7 @@ struct sysinfo {
   int nproc;
   struct fileinfo files[NFILE]; // Indexed by file_id - 1; ref == 0 means unused.
   struct procinfo procs[NPROC]; // The first nproc entries are valid.
+  uint64 freemem; // Amount of free memory in bytes.
 };
 
 #endif
