@@ -17,6 +17,7 @@ user/usys.S
 .gdbinit
 *.zip
 xv6.out*
+/project2.out
 .vagrant/
 submissions/
 ph
