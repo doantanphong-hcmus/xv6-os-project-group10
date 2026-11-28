@@ -1,0 +1,1672 @@
+diff --git a/.gitignore b/.gitignore
+index 11d0677f3fc5aa842c93968490e62f9f108c0bdb..e418f2c550a52c31abd4c4ce51fbdd03ffebc360 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -17,6 +17,7 @@ user/usys.S
+ .gdbinit
+ *.zip
+ xv6.out*
++/project2.out
+ .vagrant/
+ submissions/
+ ph
+diff --git a/Makefile b/Makefile
+index a7bb325feee3c97035f9675a1c2fe6949da678bf..7bc164cc79ac2d21ca9178a335433c8091693574 100644
+--- a/Makefile
++++ b/Makefile
+@@ -27,6 +27,7 @@ OBJS = \
+   $K/file.o \
+   $K/pipe.o \
+   $K/exec.o \
++  $K/vmprint.o \
+   $K/sysfile.o \
+   $K/kernelvec.o \
+   $K/plic.o \
+@@ -195,6 +196,10 @@ UPROGS=\
+ 	$U/_wc\
+ 	$U/_zombie\
+ 	$U/_sysinfotest\
++	$U/_project2test\
++	$U/_execbadtest\
++	$U/_vmwide\
++	$U/_vmshow\
+ 
+ 
+ 
+diff --git a/kernel/defs.h b/kernel/defs.h
+index 24f2ad9d6bee664b67b5905e25a6e4babaf4b0fd..47a310cf0a586686a24ae04bf295b05c05052e1b 100644
+--- a/kernel/defs.h
++++ b/kernel/defs.h
+@@ -24,6 +24,7 @@ void            consputc(int);
+ 
+ // exec.c
+ int             exec(char*, char**);
++int             execpt(char*, char**, int);
+ 
+ // file.c
+ struct file*    filealloc(void);
+@@ -63,6 +64,7 @@ void            ramdiskrw(struct buf*);
+ void*           kalloc(void);
+ void            kfree(void *);
+ void            kinit(void);
++uint64          kfreemem(void);
+ 
+ // log.c
+ void            initlog(int, struct superblock*);
+@@ -175,6 +177,9 @@ int             copyout(pagetable_t, uint64, char *, uint64);
+ int             copyin(pagetable_t, char *, uint64, uint64);
+ int             copyinstr(pagetable_t, char *, uint64, uint64);
+ 
++// vmprint.c
++void            vmprint(pagetable_t);
++
+ // plic.c
+ void            plicinit(void);
+ void            plicinithart(void);
+diff --git a/kernel/exec.c b/kernel/exec.c
+index 6d7c452fef9631f57cc78fa1f0e78c395e5952e4..893c8e944e82c1a8228c17cc21468718911c0c6e 100644
+--- a/kernel/exec.c
++++ b/kernel/exec.c
+@@ -19,8 +19,9 @@ int flags2perm(int flags)
+     return perm;
+ }
+ 
++// Same as exec(), but print the new page table when printpt != 0.
+ int
+-exec(char *path, char **argv)
++execpt(char *path, char **argv, int printpt)
+ {
+   char *s, *last;
+   int i, off;
+@@ -128,6 +129,9 @@ exec(char *path, char **argv)
+   p->trapframe->sp = sp; // initial stack pointer
+   proc_freepagetable(oldpagetable, oldsz);
+ 
++  if(printpt)
++    vmprint(p->pagetable);
++
+   return argc; // this ends up in a0, the first argument to main(argc, argv)
+ 
+  bad:
+@@ -140,6 +144,12 @@ exec(char *path, char **argv)
+   return -1;
+ }
+ 
++int
++exec(char *path, char **argv)
++{
++  return execpt(path, argv, 0);
++}
++
+ // Load a program segment into pagetable at virtual address va.
+ // va must be page-aligned
+ // and the pages from va to va+sz must already be mapped.
+diff --git a/kernel/kalloc.c b/kernel/kalloc.c
+index 5247b91934f6dc9426045158d7edfbe98d9e82b8..0c3184a71f2e4807f0903353fd60eda23c80ab34 100644
+--- a/kernel/kalloc.c
++++ b/kernel/kalloc.c
+@@ -91,3 +91,18 @@ kalloc(void)
+   return (void*)r;
+ }
+ 
++// Return the number of free physical memory bytes.
++uint64
++kfreemem(void)
++{
++  struct run *r;
++  uint64 count = 0;
++
++  acquire(&kmem.lock);
++  for(r = kmem.freelist; r; r = r->next) {
++    count++;
++  }
++  release(&kmem.lock);
++
++  return count * PGSIZE;
++}
+diff --git a/kernel/proc.c b/kernel/proc.c
+index 337e42e8d3a43af5e6e634d9763cd16d01abb3d9..2b312c2b11fb740ecc4eec89cc74a961772cee7e 100644
+--- a/kernel/proc.c
++++ b/kernel/proc.c
+@@ -720,7 +720,7 @@ getsysinfo(uint64 addr)
+   for(int i = NPROC - 1; i >= 0; i--)
+     release(&proc[i].lock);
+   release(&wait_lock);
+-
++  info.freemem = kfreemem();
+   int ret = copyout(myproc()->pagetable, addr, (char *)&info, sizeof(info));
+   releasesleep(&sysinfo_lock);
+   return ret;
+diff --git a/kernel/riscv.h b/kernel/riscv.h
+index f7aaa8a2b8386e14b2783883113d6a687b04d8b1..d178e40f57e22a4656e01701f8fd0fb88ba5d6bc 100644
+--- a/kernel/riscv.h
++++ b/kernel/riscv.h
+@@ -362,6 +362,7 @@ typedef uint64 *pagetable_t; // 512 PTEs
+ #define PTE_W (1L << 2)
+ #define PTE_X (1L << 3)
+ #define PTE_U (1L << 4) // user can access
++#define PTE_A (1L << 6) // accessed
+ 
+ // shift a physical address to the right place for a PTE.
+ #define PA2PTE(pa) ((((uint64)pa) >> 12) << 10)
+diff --git a/kernel/syscall.c b/kernel/syscall.c
+index eb260971b92846b8f13948d3533561b346c45658..c8dac3d49e00dbe1676cdc77f1cf62b77d9c87df 100644
+--- a/kernel/syscall.c
++++ b/kernel/syscall.c
+@@ -103,6 +103,8 @@ extern uint64 sys_mkdir(void);
+ extern uint64 sys_close(void);
+ extern uint64 sys_trace(void);
+ extern uint64 sys_sysinfo(void);
++extern uint64 sys_pgaccess(void);
++extern uint64 sys_execvm(void);
+ 
+ // An array mapping syscall numbers from syscall.h
+ // to the function that handles the system call.
+@@ -130,6 +132,8 @@ static uint64 (*syscalls[])(void) = {
+ [SYS_close]   sys_close,
+ [SYS_trace]   sys_trace,
+ [SYS_sysinfo] sys_sysinfo,
++[SYS_pgaccess] sys_pgaccess,
++[SYS_execvm]  sys_execvm,
+ };
+ 
+ // Index names by syscall number, matching the dispatch table above.
+@@ -157,6 +161,8 @@ static char *syscallnames[] = {
+ [SYS_close]   "close",
+ [SYS_trace]   "trace",
+ [SYS_sysinfo] "sysinfo",
++[SYS_pgaccess] "pgaccess",
++[SYS_execvm]  "execvm",
+ };
+ 
+ void
+diff --git a/kernel/syscall.h b/kernel/syscall.h
+index 38acc786dc73da1f9895ddb84da522220d5e4cb8..46a92a2c3c4a463c177ba20a7175fe65889490cc 100644
+--- a/kernel/syscall.h
++++ b/kernel/syscall.h
+@@ -23,3 +23,5 @@
+ #define SYS_close  21
+ #define SYS_trace  22
+ #define SYS_sysinfo 23
++#define SYS_pgaccess 24
++#define SYS_execvm 25
+diff --git a/kernel/sysfile.c b/kernel/sysfile.c
+index f9dc90338e6056052ad65284b96f2a93881ba775..5630bee15428a222729af7638c6190ca4d16e258 100644
+--- a/kernel/sysfile.c
++++ b/kernel/sysfile.c
+@@ -441,8 +441,9 @@ sys_chdir(void)
+   return 0;
+ }
+ 
+-uint64
+-sys_exec(void)
++// Shared by exec and execvm: copy path and argv from user space, then exec.
++static uint64
++doexec(int printpt)
+ {
+   char path[MAXPATH], *argv[MAXARG];
+   int i;
+@@ -471,7 +472,7 @@ sys_exec(void)
+       goto bad;
+   }
+ 
+-  int ret = exec(path, argv);
++  int ret = execpt(path, argv, printpt);
+ 
+   for(i = 0; i < NELEM(argv) && argv[i] != 0; i++)
+     kfree(argv[i]);
+@@ -484,6 +485,19 @@ sys_exec(void)
+   return -1;
+ }
+ 
++uint64
++sys_exec(void)
++{
++  return doexec(0);
++}
++
++// Like exec, but print the new page table before returning.
++uint64
++sys_execvm(void)
++{
++  return doexec(1);
++}
++
+ uint64
+ sys_pipe(void)
+ {
+diff --git a/kernel/sysinfo.h b/kernel/sysinfo.h
+index e88d7902286d24147e2469c4de994e22ad565a6c..7bf8a10a7515511f1b8f05aefcb3dee3e54f3038 100644
+--- a/kernel/sysinfo.h
++++ b/kernel/sysinfo.h
+@@ -27,6 +27,7 @@ struct sysinfo {
+   int nproc;
+   struct fileinfo files[NFILE]; // Indexed by file_id - 1; ref == 0 means unused.
+   struct procinfo procs[NPROC]; // The first nproc entries are valid.
++  uint64 freemem; // Amount of free memory in bytes.
+ };
+ 
+ #endif
+diff --git a/kernel/sysproc.c b/kernel/sysproc.c
+index 20ab2923becee192eecb077378984fb038ec11ee..a832f54839d6fa4699a77b8ee792bcd34df53dc9 100644
+--- a/kernel/sysproc.c
++++ b/kernel/sysproc.c
+@@ -113,3 +113,37 @@ sys_sysinfo(void)
+     return -1;
+   return getsysinfo(addr);
+ }
++
++uint64
++sys_pgaccess(void)
++{
++  uint64 addr, result;
++  int n;
++  uint mask = 0;
++  pte_t *ptes[32];
++  struct proc *p = myproc();
++
++  argaddr(0, &addr);
++  argint(1, &n);
++  argaddr(2, &result);
++  addr = PGROUNDDOWN(addr);
++  if(n < 0 || n > 32 || addr >= MAXVA ||
++     (uint64)n > (MAXVA - addr) / PGSIZE)
++    return -1;
++
++  for(int i = 0; i < n; i++){
++    ptes[i] = walk(p->pagetable, addr + i * PGSIZE, 0);
++    if(ptes[i] == 0 || (*ptes[i] & (PTE_V | PTE_U)) != (PTE_V | PTE_U))
++      return -1;
++    if(*ptes[i] & PTE_A)
++      mask |= 1U << i;
++  }
++
++  // Keep access bits intact if copying the result fails.
++  if(copyout(p->pagetable, result, (char *)&mask, sizeof(mask)) < 0)
++    return -1;
++  // userret flushes the TLB before user mode resumes.
++  for(int i = 0; i < n; i++)
++    *ptes[i] &= ~PTE_A;
++  return 0;
++}
+diff --git a/kernel/vmprint.c b/kernel/vmprint.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..420b80a62e60dbc5b4f1a349e917b8ad60ff9725
+--- /dev/null
++++ b/kernel/vmprint.c
+@@ -0,0 +1,32 @@
++#include "types.h"
++#include "param.h"
++#include "memlayout.h"
++#include "riscv.h"
++#include "defs.h"
++
++// Print the valid PTEs of one page-table page and descend into
++// lower-level tables. depth is 1 for the root, 3 for leaf level.
++static void vmprint_level(pagetable_t pagetable, int depth){
++  for (int i=0;i<512;i++){
++    pte_t pte=pagetable[i];
++
++    // Skip invalid PTEs.
++    if((pte & PTE_V) == 0)
++      continue;
++
++    for(int j=0;j<depth;j++){
++      printf(" ..");
++    }
++    printf("%d: pte %p pa %p\n", i, (void *)pte, (void *)PTE2PA(pte));
++
++    // A valid PTE with R, W and X all clear points to a lower-level table.
++    if((pte & (PTE_R|PTE_W|PTE_X)) == 0)
++      vmprint_level((pagetable_t)PTE2PA(pte), depth + 1);
++  }
++}
++
++// Print a page table: its address, then every valid PTE.
++void vmprint(pagetable_t pagetable){
++  printf("page table %p\n", pagetable);
++  vmprint_level(pagetable, 1);
++}
+diff --git a/user/user.h b/user/user.h
+index 7542da7701ffee272c1688a9247ba701006fd624..4b39b82b3696f7f754f24c7c7e5c72825f11a8c8 100644
+--- a/user/user.h
++++ b/user/user.h
+@@ -25,6 +25,8 @@ int sleep(int);
+ int uptime(void);
+ int trace(int);
+ int sysinfo(struct sysinfo *);
++int pgaccess(void*, int, uint*);
++int execvm(const char*, char**);
+ 
+ // ulib.c
+ int stat(const char*, struct stat*);
+diff --git a/user/usertests.c b/user/usertests.c
+index 28b53f9a6d4c21ea1bcf489359d4ea94abc472d9..b266e63ead33ecc4db34db3c658e02ed255ec63d 100644
+--- a/user/usertests.c
++++ b/user/usertests.c
+@@ -244,7 +244,7 @@ copyinstr3(char *s)
+ // See if the kernel refuses to read/write user memory that the
+ // application doesn't have anymore, because it returned it.
+ void
+-rwsbrk()
++rwsbrk(char *s)
+ {
+   int fd, n;
+   
+@@ -2344,7 +2344,7 @@ void
+ fsfull()
+ {
+   int nfiles;
+-  int fsblocks = 0;
++  //int fsblocks = 0;
+ 
+   printf("fsfull test\n");
+ 
+@@ -2368,7 +2368,7 @@ fsfull()
+       if(cc < BSIZE)
+         break;
+       total += cc;
+-      fsblocks++;
++      // fsblocks++;
+     }
+     printf("wrote %d bytes\n", total);
+     close(fd);
+diff --git a/user/usys.pl b/user/usys.pl
+index bc109fd5a0d85a3844c51d056e093c2432bb21ca..396214a8fe93ea273db1f1c7ff7c60b8656acc17 100755
+--- a/user/usys.pl
++++ b/user/usys.pl
+@@ -38,3 +38,5 @@ entry("sleep");
+ entry("uptime");
+ entry("trace");
+ entry("sysinfo");
++entry("pgaccess");
++entry("execvm");
+diff --git a/user/vmshow.c b/user/vmshow.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..dbf123b9fc383d3a64b2dacc3fc2431dbc8a151c
+--- /dev/null
++++ b/user/vmshow.c
+@@ -0,0 +1,15 @@
++#include "kernel/types.h"
++#include "user/user.h"
++
++// vmshow prog [args...]: run prog and print its page table on exec.
++int
++main(int argc, char *argv[])
++{
++  if(argc < 2){
++    fprintf(2, "usage: vmshow prog [args...]\n");
++    exit(1);
++  }
++  execvm(argv[1], argv + 1);
++  fprintf(2, "vmshow: exec %s failed\n", argv[1]);
++  exit(1);
++}
+diff --git a/project2test.py b/project2test.py
+new file mode 100755
+index 0000000000000000000000000000000000000000..69304e31f600e7ee1e39a204a1300ac45986cd07
+--- /dev/null
++++ b/project2test.py
+@@ -0,0 +1,219 @@
++#!/usr/bin/env python3
++"""Run Project 2 tests on a private disk; validate vmprint against built ELFs."""
++import os
++from pathlib import Path
++import re
++import select
++import struct
++import subprocess
++import sys
++import tempfile
++import time
++
++ROOT = Path(__file__).resolve().parent
++PAGE = 4096
++MAXVA = 1 << 38
++ANSI = re.compile(r"\x1b\[[0-9;]*m")
++
++
++def require(ok, message):
++    if not ok:
++        raise AssertionError(message)
++
++
++def expected_leaves(binary):
++    elf = binary.read_bytes()
++    require(elf[:6] == b"\x7fELF\x02\x01", f"not ELF64 little-endian: {binary}")
++    phoff = struct.unpack_from("<Q", elf, 32)[0]
++    entsize, count = struct.unpack_from("<HH", elf, 54)
++    leaves = {}
++    end = 0
++    for i in range(count):
++        kind, flags, _, va, _, _, size, _ = struct.unpack_from(
++            "<IIQQQQQQ", elf, phoff + i * entsize)
++        if kind != 1 or va + size <= end:
++            continue
++        # xv6 allocates each segment plus any preceding gap with R/U and ELF W/X.
++        perm = 1 | 2 | 16 | (4 if flags & 2 else 0) | (8 if flags & 1 else 0)
++        for address in range((end + PAGE - 1) // PAGE * PAGE, va + size, PAGE):
++            leaves[address] = perm
++        end = va + size
++    guard = (end + PAGE - 1) // PAGE * PAGE
++    stack = int(re.search(r"#define\s+USERSTACK\s+(\d+)",
++                          (ROOT / "kernel/param.h").read_text())[1])
++    leaves[guard] = 7
++    for i in range(1, stack + 1):
++        leaves[guard + i * PAGE] = 23
++    leaves[MAXVA - 2 * PAGE] = 7
++    leaves[MAXVA - PAGE] = 11
++    return leaves
++
++
++def validate_tree(output, binary, tail):
++    lines = output.strip().splitlines()
++    require(len(lines) >= 3, "missing page table or program output")
++    root = re.fullmatch(r"page table (0x[0-9a-fA-F]{16})", lines[0])
++    require(root is not None, f"bad page-table header: {lines[0]}")
++    require(lines[-1] == tail, f"program did not complete: expected {tail}")
++    rootpa = int(root[1], 16)
++    require(rootpa % PAGE == 0 and 0x80000000 <= rootpa < 0x88000000,
++            "root page table outside RAM or unaligned")
++    table_pages = {rootpa}
++    leaves = {}
++    last_index = {}
++    branches = []
++    for line in lines[1:-1]:
++        entry = re.fullmatch(
++            r"((?: \.\.){1,3})(\d+): pte (0x[0-9a-fA-F]{16}) pa (0x[0-9a-fA-F]{16})", line)
++        require(entry is not None, f"bad PTE format/depth: {line}")
++        depth = len(entry[1]) // 3
++        index, pte, pa = int(entry[2]), int(entry[3], 16), int(entry[4], 16)
++        require(depth <= len(branches) + 1, f"missing parent: {line}")
++        parent = tuple(branches[:depth - 1])
++        require(0 <= index < 512 and index > last_index.get(parent, -1),
++                f"duplicate, unordered or invalid index: {line}")
++        last_index[parent] = index
++        path = parent + (index,)
++        require(pte & 1, f"invalid PTE printed: {line}")
++        require(pa == (pte >> 10) << 12, f"PA != PTE2PA: {line}")
++        require(0x80000000 <= pa < 0x88000000, f"PA outside RAM: {line}")
++        if pte & 14:
++            require(depth == 3, f"unexpected superpage: {line}")
++            va = sum(n << (12 + 9 * (2 - i)) for i, n in enumerate(path))
++            leaves[va] = pte & 31
++            branches = list(parent)
++        else:
++            require(depth < 3 and pte & 31 == 1, f"invalid non-leaf: {line}")
++            require(pa not in table_pages, f"page-table cycle/alias: {line}")
++            table_pages.add(pa)
++            branches = list(path)
++    expected = expected_leaves(binary)
++    missing = sorted(expected.keys() - leaves.keys())
++    extra = sorted(leaves.keys() - expected.keys())
++    wrong = [hex(va) for va in expected.keys() & leaves.keys()
++             if expected[va] != leaves[va]]
++    require(not missing and not extra and not wrong,
++            f"leaf mismatch: missing={[hex(v) for v in missing[:3]]}, "
++            f"extra={[hex(v) for v in extra[:3]]}, wrong permissions={wrong[:3]}")
++    # Require exactly the intermediate tables needed by the expected mappings.
++    parents = {(va >> 30,) for va in expected}
++    parents |= {(va >> 30, (va >> 21) & 511) for va in expected}
++    require(set(last_index) == {()} | parents and len(table_pages) == len(parents) + 1,
++            "extra or missing intermediate table")
++    return len(leaves), len(table_pages)
++
++
++def check_validator(tree):
++    lines = tree.strip().splitlines()
++    leaf = next(i for i, line in enumerate(lines) if line.startswith(" .. .. .."))
++    bad_pa = lines.copy()
++    bad_pa[leaf] = bad_pa[leaf].split(" pa ")[0] + " pa 0x0000000000000000"
++    bad_permissions = lines.copy()
++    pte = re.search(r"pte (0x[0-9a-fA-F]+)", lines[leaf])[1]
++    bad_permissions[leaf] = lines[leaf].replace(pte, f"0x{int(pte, 16) ^ 16:016x}", 1)
++    for name, broken in [("missing tree", []), ("missing leaf", lines[:leaf] + lines[leaf + 1:]),
++                         ("wrong PA", bad_pa), ("wrong permissions", bad_permissions)]:
++        try:
++            validate_tree("\n".join(broken), ROOT / "user/_echo", "execvm-exec")
++        except AssertionError:
++            continue
++        raise AssertionError(f"checker accepted {name}")
++
++
++def validate_project(output):
++    output = ANSI.sub("", output).replace("\r", "")
++    require("FAIL" not in output and "panic:" not in output, "xv6 assertion or panic")
++    require("RESULT: assertions passed in 17/17 groups." in output, "incomplete run")
++    groups = [f"{part}.{i}" for part, count in [(1, 11), (2, 6)]
++              for i in range(1, count + 1)]
++    require(re.findall(r"^\[(\d+\.\d+)\]", output, re.M) == groups,
++            "missing or reordered test groups")
++    require(len(re.findall(r"^  .*✓ .*PASS$", output, re.M)) == 17,
++            "missing group PASS results")
++    require(not re.search(r"^page table ", output, re.M), "unexpected table in syscall tests")
++
++
++def run():
++    os.chdir(ROOT)
++    subprocess.run(["make", "-j4", "kernel/kernel", "mkfs/mkfs"] +
++                   ["user/_" + p for p in ["init", "sh", "echo", "project2test", "vmshow", "vmwide", "execbadtest"]],
++                   check=True, stdout=subprocess.DEVNULL)
++    with tempfile.TemporaryDirectory(prefix="project2-") as tmp:
++        disk = Path(tmp)
++        names = ["_init", "_sh", "_echo", "_project2test", "_vmshow", "_vmwide", "_execbadtest"]
++        for name in names:
++            (disk / name).symlink_to(ROOT / "user" / name)
++        (disk / "README").symlink_to(ROOT / "README")
++        subprocess.run([str(ROOT / "mkfs/mkfs"), "test.img", "README"] + names,
++                       cwd=disk, check=True, stdout=subprocess.DEVNULL)
++        args = ["qemu-system-riscv64", "-machine", "virt", "-bios", "none",
++                "-kernel", "kernel/kernel", "-m", "128M", "-smp", os.environ.get("CPUS", "3"), "-nographic",
++                "-global", "virtio-mmio.force-legacy=false", "-drive",
++                f"file={disk}/test.img,if=none,format=raw,id=x0", "-device",
++                "virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0", "-snapshot"]
++        with (ROOT / "project2.out").open("wb") as log:
++            process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
++                                       stderr=subprocess.STDOUT)
++
++            def prompt(show=False):
++                data = b""
++                deadline = time.monotonic() + 180
++                while time.monotonic() < deadline:
++                    if not select.select([process.stdout], [], [], 1)[0]:
++                        continue
++                    chunk = os.read(process.stdout.fileno(), 65536)
++                    require(chunk, "QEMU exited before shell prompt; see project2.out")
++                    data += chunk
++                    log.write(chunk)
++                    log.flush()
++                    if show:
++                        sys.stdout.buffer.write(chunk)
++                        sys.stdout.buffer.flush()
++                    if data.endswith(b"$ "):
++                        return data.decode("utf-8", "replace").replace("\r", "")
++                raise AssertionError("QEMU timeout; see project2.out")
++
++            def command(cmd):
++                process.stdin.write((cmd + "\n").encode())
++                process.stdin.flush()
++                output = prompt(show=True)
++                require(output.startswith(cmd + "\n"), "unexpected shell command echo")
++                require("panic:" not in output, "kernel panic; see project2.out")
++                return output[len(cmd) + 1:-2]
++
++            try:
++                prompt()
++                validate_project(command("project2test"))
++                print("\nVMPRINT | Linux checks console output against ELF", flush=True)
++                require(command("echo normal-exec") == "normal-exec\n", "ordinary exec output changed")
++                tree = command("vmshow echo execvm-exec")
++                small = validate_tree(tree, ROOT / "user/_echo", "execvm-exec")
++                large = validate_tree(command("vmshow vmwide"), ROOT / "user/_vmwide", "VMWIDE OK")
++                expected = expected_leaves(ROOT / "user/_vmwide")
++                require(any(1 << 21 <= va < MAXVA - 2 * PAGE for va in expected),
++                        "fixture did not cross 2 MiB")
++                print("\nExpected execvm error returns: -1 for each case.", flush=True)
++                require(command("execbadtest") ==
++                        "missing file: -1\nnon-ELF file: -1\ninvalid argv: -1\n",
++                        "execvm error returns/output changed")
++                check_validator(tree)
++                print("\n  │ Tree       │ Leaves │ Tables │ ELF mappings / permissions / PTE / PA │")
++                for name, counts in [("echo", small), ("vmwide", large)]:
++                    print(f"  │ {name:10} │ {counts[0]:6} │ {counts[1]:6} │ verified                              │")
++                print("  \033[42;97m ✓ \033[0m PASS: ordinary exec is quiet; both trees and three execvm errors validated.")
++                print("  Checker self-check: rejected missing tree/leaf, wrong PA and wrong permissions.")
++            finally:
++                process.terminate()
++                try:
++                    process.wait(timeout=5)
++                except subprocess.TimeoutExpired:
++                    process.kill()
++                    process.wait()
++
++
++if __name__ == "__main__":
++    try:
++        run()
++    except (AssertionError, OSError, subprocess.CalledProcessError) as error:
++        print(f"\n  \033[41;97m ✗ \033[0m FAIL: {error}")
++        raise SystemExit(1)
+diff --git a/user/execbadtest.c b/user/execbadtest.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..8afbe62661b2370b9810d2d99324ca971281991b
+--- /dev/null
++++ b/user/execbadtest.c
+@@ -0,0 +1,15 @@
++#include "kernel/types.h"
++#include "user/user.h"
++
++// Exercise invalid execvm arguments; the Linux runner checks the return values.
++int
++main(void)
++{
++  char *missing[] = { "nosuchprog", 0 };
++  char *notelf[] = { "README", 0 };
++
++  printf("missing file: %d\n", execvm("nosuchprog", missing));
++  printf("non-ELF file: %d\n", execvm("README", notelf));
++  printf("invalid argv: %d\n", execvm("echo", (char **)0xffffffffffL));
++  exit(0);
++}
+diff --git a/user/project2test.c b/user/project2test.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..c4635ac778e4d43cda71d200c76859b5037b011a
+--- /dev/null
++++ b/user/project2test.c
+@@ -0,0 +1,994 @@
++// Project 2 syscall checks: sysinfo/free memory and pgaccess.
++// Run project2test in xv6; project2test.py checks vmprint separately from Linux.
++#include "kernel/types.h"
++#include "kernel/fcntl.h"
++#include "kernel/riscv.h"
++#include "kernel/memlayout.h"
++#include "kernel/sysinfo.h"
++#include "user/user.h"
++
++#define MAXMEM (PHYSTOP - KERNBASE)
++
++// The result spans multiple pages; keep it off the one-page user stack.
++static struct sysinfo info;
++static char *part;
++static int completed;
++static int table_open;
++
++// xv6 printf has no field-width support; keep column formatting local to this test.
++static void
++cell(char *text, int width)
++{
++  printf("%s", text);
++  for(int i = strlen(text); i < width; i++)
++    printf(" ");
++}
++
++static void
++number(long value, int width)
++{
++  uint64 magnitude = value;
++  int digits = value < 0;
++  if(value < 0)
++    magnitude = 0 - magnitude;
++  do {
++    digits++;
++    magnitude /= 10;
++  } while(magnitude);
++  for(int i = digits; i < width; i++)
++    printf(" ");
++  printf("%ld", value);
++}
++
++static void
++hex(uint value)
++{
++  int digits = 1;
++  for(uint n = value; n >= 16; n /= 16)
++    digits++;
++  printf("0x");
++  for(int i = digits; i < 8; i++)
++    printf("0");
++  printf("%x", value);
++}
++
++static void
++comparison(void)
++{
++  if(!table_open){
++    printf("  │ Check / context                                  │   Observed │   Expected │\n");
++    printf("  ├──────────────────────────────────────────────────┼────────────┼────────────┤\n");
++    table_open = 1;
++  }
++}
++
++static void
++row(char *label)
++{
++  comparison();
++  printf("  │ ");
++  cell(label, 48);
++  printf(" │ ");
++}
++
++static void
++record(char *label, long value)
++{
++  row(label);
++  number(value, 10);
++  printf(" │          - │\n");
++}
++
++static void
++check(int ok, char *message)
++{
++  if(!ok){
++    fprintf(2, "  \033[41;97m ✗ \033[0m FAIL [%s]: %s\n", part, message);
++    exit(1);
++  }
++}
++
++static void
++group(char *label)
++{
++  part = label;
++  table_open = 0;
++  printf("\n%s\n", label);
++}
++
++static void
++passed(void)
++{
++  completed++;
++  table_open = 0;
++  printf("  \033[42;97m ✓ \033[0m PASS\n");
++}
++
++static void
++note(char *message)
++{
++  printf("  \033[48;5;208;97m i \033[0m %s\n", message);
++}
++
++static void
++expect(char *label, long actual, long expected)
++{
++  row(label);
++  number(actual, 10);
++  printf(" │ ");
++  number(expected, 10);
++  printf(" │\n");
++  check(actual == expected, label);
++}
++
++static void
++range(char *label, int actual, int low, int high)
++{
++  row(label);
++  number(actual, 10);
++  printf(" │ ");
++  number(low, 4);
++  printf("..");
++  number(high, 4);
++  printf(" │\n");
++  check(actual >= low && actual <= high, label);
++}
++
++static struct procinfo *
++findproc(int pid)
++{
++  for(int i = 0; i < info.nproc; i++)
++    if(info.procs[i].pid == pid)
++      return &info.procs[i];
++  return 0;
++}
++
++static struct procinfo *
++process(int pid)
++{
++  struct procinfo *p = findproc(pid);
++  check(p != 0, "missing process");
++  return p;
++}
++
++static void
++snapshot(void)
++{
++  int refs[NFILE] = {0};
++  int nfile = 0;
++
++  check(sysinfo(&info) == 0, "valid sysinfo call");
++  check(info.nfile >= 0 && info.nfile <= NFILE, "file count bounds");
++  check(info.nproc > 0 && info.nproc <= NPROC, "process count bounds");
++  check(info.freemem <= MAXMEM && info.freemem % PGSIZE == 0,
++        "free memory bounds and page alignment");
++  for(int i = 0; i < info.nproc; i++){
++    struct procinfo *p = &info.procs[i];
++    check(p->pid > 0, "invalid PID");
++    check(p->ppid >= 0 && p->ppid != p->pid, "invalid parent PID");
++    check(p->state >= USED && p->state <= ZOMBIE, "invalid process state");
++    for(int j = 0; j < i; j++)
++      check(info.procs[j].pid != p->pid, "duplicate PID");
++    for(int fd = 0; fd < NOFILE; fd++){
++      int id = p->file_id[fd];
++      check(id >= 0 && id <= NFILE, "file ID bounds");
++      if(id){
++        refs[id - 1]++;
++        check(info.files[id - 1].type != FD_NONE, "descriptor has no file type");
++      }
++    }
++  }
++  for(int i = 0; i < NFILE; i++){
++    struct fileinfo *f = &info.files[i];
++    check(f->ref >= refs[i], "reference count below descriptor count");
++    if(f->ref == 0)
++      continue;
++    nfile++;
++    check(f->type >= FD_NONE && f->type <= FD_DEVICE, "invalid file type");
++    check((f->readable == 0 || f->readable == 1) &&
++          (f->writable == 0 || f->writable == 1), "invalid file mode");
++  }
++  check(info.nfile == nfile, "file total does not match list");
++  struct procinfo *self = process(getpid());
++  check(self->state == RUNNING && self->nsched > 0, "caller state or schedule count");
++}
++
++static int
++fileid(int fd)
++{
++  check(fd >= 0 && fd < NOFILE, "invalid test descriptor");
++  int id = process(getpid())->file_id[fd];
++  check(id > 0 && id <= NFILE, "missing open descriptor");
++  return id;
++}
++
++static int
++holds(struct procinfo *p, int id)
++{
++  for(int fd = 0; fd < NOFILE; fd++)
++    if(p->file_id[fd] == id)
++      return 1;
++  return 0;
++}
++
++static int
++owners(int id)
++{
++  int n = 0;
++  for(int i = 0; i < info.nproc; i++)
++    n += holds(&info.procs[i], id);
++  return n;
++}
++
++static void
++testfiles(void)
++{
++  group("[1.3] open README, dup, independent open, close and access modes");
++  char first[3], second[3];
++  snapshot();
++  int baseline = info.nfile;
++  int fd = open("README", O_RDONLY);
++  check(fd >= 0, "open README");
++  snapshot();
++  int id = fileid(fd);
++  record("open README: fd", fd);
++  record("open README: file ID", id);
++  record("open README: type", info.files[id - 1].type);
++  record("open README: readable", info.files[id - 1].readable);
++  record("open README: writable", info.files[id - 1].writable);
++  expect("open objects", info.nfile, baseline + 1);
++  check(info.files[id - 1].type == FD_INODE, "new file type");
++  expect("new file references", info.files[id - 1].ref, 1);
++  check(info.files[id - 1].readable && !info.files[id - 1].writable, "read-only mode");
++
++  int copy = dup(fd);
++  check(copy >= 0, "dup README");
++  snapshot();
++  expect("dup file ID", fileid(copy), id);
++  expect("open objects after dup", info.nfile, baseline + 1);
++  expect("references", info.files[id - 1].ref, 2);
++  expect("unique owner PIDs", owners(id), 1);
++
++  int separate = open("README", O_RDONLY);
++  check(separate >= 0, "independent open");
++  snapshot();
++  record("independent open: file ID (must differ)", fileid(separate));
++  record("previous open: file ID", id);
++  check(fileid(separate) != id, "open has a separate object");
++  expect("open objects", info.nfile, baseline + 2);
++  check(read(fd, first, 2) == 2 && read(copy, first + 2, 1) == 1 &&
++        read(separate, second, 3) == 3, "read README");
++  check(memcmp(first, second, 3) == 0, "dup shares offset; open has its own offset");
++  close(fd);
++  snapshot();
++  expect("closed descriptor mapping", process(getpid())->file_id[fd], 0);
++  expect("remaining references", info.files[id - 1].ref, 1);
++  expect("read through remaining descriptor", read(copy, first, 1), 1);
++  close(copy);
++  close(separate);
++  snapshot();
++  expect("open objects", info.nfile, baseline);
++
++  int modes[] = {O_WRONLY, O_RDWR};
++  for(int i = 0; i < 2; i++){
++    fd = open("README", modes[i]);
++    check(fd >= 0, "open access mode");
++    snapshot();
++    struct fileinfo *f = &info.files[fileid(fd) - 1];
++    record("open mode (O_WRONLY=1, O_RDWR=2)", modes[i]);
++    expect("mode: readable", f->readable, i == 1);
++    expect("mode: writable", f->writable, 1);
++    check(f->writable && f->readable == (i == 1), "write-only or read-write mode");
++    close(fd);
++  }
++  fd = open(".", O_RDONLY);
++  check(fd >= 0, "open directory");
++  snapshot();
++  check(info.files[fileid(fd) - 1].type == FD_INODE, "directory file type");
++  close(fd);
++  fd = open("console", O_RDWR);
++  check(fd >= 0, "open console");
++  snapshot();
++  struct fileinfo *f = &info.files[fileid(fd) - 1];
++  check(f->type == FD_DEVICE && f->readable && f->writable, "device type and mode");
++  close(fd);
++  snapshot();
++  expect("open objects after cleanup", info.nfile, baseline);
++  passed();
++}
++
++static void
++testpipe(void)
++{
++  group("[1.4] pipe endpoints, byte transfer and cleanup");
++  int p[2];
++  char c;
++  snapshot();
++  int baseline = info.nfile;
++  check(pipe(p) == 0, "create pipe");
++  snapshot();
++  int r = fileid(p[0]), w = fileid(p[1]);
++  check(r != w, "pipe has two file objects");
++  check(info.files[r - 1].type == FD_PIPE && info.files[w - 1].type == FD_PIPE,
++        "pipe type");
++  check(info.files[r - 1].readable && !info.files[r - 1].writable &&
++        !info.files[w - 1].readable && info.files[w - 1].writable, "pipe modes");
++  expect("open objects", info.nfile, baseline + 2);
++  check(write(p[1], "x", 1) == 1 && read(p[0], &c, 1) == 1 && c == 'x', "pipe I/O");
++  close(p[0]);
++  close(p[1]);
++  snapshot();
++  expect("open objects after cleanup", info.nfile, baseline);
++  passed();
++}
++
++static void
++testlimits(void)
++{
++  group("[1.5] fill descriptor table; reject dup/pipe without leaking files");
++  int fds[NOFILE], p[2], n = 0, used = 0;
++  snapshot();
++  int baseline = info.nfile;
++  for(int fd = 0; fd < NOFILE; fd++)
++    used += process(getpid())->file_id[fd] != 0;
++  while(n < NOFILE && (fds[n] = open("README", O_RDONLY)) >= 0)
++    n++;
++  expect("successful opens", n, NOFILE - used);
++  check(n > 0, "no free descriptors at test start");
++  expect("dup on full table", dup(fds[0]), -1);
++  expect("pipe on full table", pipe(p), -1);
++  snapshot();
++  expect("open objects (no leaked allocations)", info.nfile, baseline + n);
++  int freed = fds[--n];
++  close(freed);
++  expect("pipe with one free slot", pipe(p), -1);
++  snapshot();
++  expect("freed descriptor mapping", process(getpid())->file_id[freed], 0);
++  expect("open objects after failed pipe", info.nfile, baseline + n);
++  while(n > 0)
++    close(fds[--n]);
++  snapshot();
++  expect("open objects after cleanup", info.nfile, baseline);
++  passed();
++}
++
++static struct procinfo *
++awaitstate(int pid, enum procstate state)
++{
++  // Poll a reported state with a deadline, rather than guessing when the child runs.
++  for(int i = 0; i < 100; i++){
++    snapshot();
++    struct procinfo *p = process(pid);
++    if(p->state == state)
++      return p;
++    sleep(1);
++  }
++  check(0, "timed out waiting for process state");
++  return 0;
++}
++
++static void
++testfork(void)
++{
++  group("[1.6] fork: shared descriptors, wakeup, zombie and wait");
++  int ready[2], go[2], status;
++  char c;
++  snapshot();
++  int nproc = info.nproc, nfile = info.nfile, parent = getpid();
++  int fd = open("README", O_RDONLY), copy = dup(fd);
++  check(fd >= 0 && copy >= 0 && pipe(ready) == 0 && pipe(go) == 0, "fork setup");
++  int pid = fork();
++  check(pid >= 0, "fork");
++  if(pid == 0){
++    close(ready[0]);
++    close(go[1]);
++    snapshot();
++    check(process(getpid())->ppid == parent, "child parent PID");
++    for(int i = 0; i < 2; i++){
++      check(write(ready[1], "r", 1) == 1, "child ready");
++      check(read(go[0], &c, 1) == 1, "child release");
++    }
++    exit(23);
++  }
++  close(ready[1]);
++  close(go[0]);
++  check(read(ready[0], &c, 1) == 1, "parent receives ready");
++  struct procinfo *child = awaitstate(pid, SLEEPING);
++  int id = fileid(fd);
++  expect("process count", info.nproc, nproc + 1);
++  expect("child's parent PID", child->ppid, parent);
++  expect("child state (SLEEPING)", child->state, SLEEPING);
++  check(child->file_id[fd] == id && child->file_id[copy] == id && fileid(copy) == id,
++        "fork inherits descriptors");
++  uint64 nsched = child->nsched;
++  record("child PID", pid);
++  record("shared file ID", id);
++  expect("references (two descriptors per process)", info.files[id - 1].ref, 4);
++  expect("unique owner PIDs", owners(id), 2);
++  check(write(go[1], "g", 1) == 1 && read(ready[0], &c, 1) == 1, "wake child");
++  child = awaitstate(pid, SLEEPING);
++  record("nsched before wakeup", nsched);
++  record("nsched after wakeup (must increase)", child->nsched);
++  check(child->nsched > nsched, "schedule count grows after wakeup");
++  check(write(go[1], "g", 1) == 1, "let child exit");
++  child = awaitstate(pid, ZOMBIE);
++  expect("child state (ZOMBIE)", child->state, ZOMBIE);
++  expect("process count before wait", info.nproc, nproc + 1);
++  expect("zombie's parent PID", child->ppid, parent);
++  int childfds = 0;
++  for(int i = 0; i < NOFILE; i++)
++    childfds += child->file_id[i] != 0;
++  expect("zombie's open descriptors", childfds, 0);
++  expect("file references after child exit", info.files[id - 1].ref, 2);
++  expect("wait returned PID", wait(&status), pid);
++  expect("exit status", status, 23);
++  close(ready[0]);
++  close(go[1]);
++  close(fd);
++  close(copy);
++  snapshot();
++  expect("process count after wait", info.nproc, nproc);
++  expect("open objects after cleanup", info.nfile, nfile);
++  check(findproc(pid) == 0, "reaped child is absent");
++  passed();
++}
++
++static void
++testowners(void)
++{
++  group("[1.7] open once; share the file across parent and 16 children");
++  int gate[2], pids[16], status;
++  char tokens[16] = {0}, c;
++  snapshot();
++  int nproc = info.nproc, nfile = info.nfile;
++  int fd = open("README", O_RDONLY);
++  check(fd >= 0 && pipe(gate) == 0, "owner test setup");
++  // One open followed by fork shares one object; independent opens would not.
++  for(int i = 0; i < 16; i++){
++    pids[i] = fork();
++    check(pids[i] >= 0, "fork file owner");
++    if(pids[i] == 0){
++      close(gate[1]);
++      check(read(gate[0], &c, 1) == 1, "owner release");
++      exit(0);
++    }
++  }
++  close(gate[0]);
++  snapshot();
++  int id = fileid(fd);
++  expect("process count", info.nproc, nproc + 16);
++  expect("unique owner PIDs", owners(id), 17);
++  expect("file references", info.files[id - 1].ref, 17);
++  for(int i = 0; i < 16; i++)
++    check(process(pids[i])->file_id[fd] == id && process(pids[i])->ppid == getpid(),
++          "owner PID and inherited file");
++  check(write(gate[1], tokens, sizeof(tokens)) == sizeof(tokens), "release owners");
++  close(gate[1]);
++  for(int i = 0; i < 16; i++)
++    check(wait(&status) > 0 && status == 0, "wait file owner");
++  close(fd);
++  snapshot();
++  expect("process count after wait", info.nproc, nproc);
++  expect("open objects after cleanup", info.nfile, nfile);
++  passed();
++}
++
++static void
++testconcurrent(void)
++{
++  group("[1.8] snapshots during concurrent open/dup/pipe/close");
++  snapshot();
++  int nproc = info.nproc, nfile = info.nfile;
++  int pid = fork(), status;
++  check(pid >= 0, "fork concurrent worker");
++  if(pid == 0){
++    for(int i = 0; i < 100; i++){
++      int fd = open("README", O_RDONLY), copy = dup(fd), p[2];
++      check(fd >= 0 && copy >= 0 && pipe(p) == 0, "concurrent open/dup/pipe");
++      snapshot();
++      close(fd);
++      close(copy);
++      close(p[0]);
++      close(p[1]);
++    }
++    exit(0);
++  }
++  printf("    input: parent snapshots=200; worker pid=%d cycles=100\n", pid);
++  for(int i = 0; i < 200; i++){
++    snapshot();
++  }
++  expect("wait returned worker PID", wait(&status), pid);
++  expect("worker exit status", status, 0);
++  snapshot();
++  expect("process count after wait", info.nproc, nproc);
++  expect("open objects after cleanup", info.nfile, nfile);
++  passed();
++}
++
++static void
++testfiletable(void)
++{
++  group("[1.9] fill global file table; check allocation failure and cleanup");
++  int ready[2], gate[2], pids[NPROC], counts[NPROC];
++  int workers = 0, opened = 0, status;
++  char tokens[NPROC] = {0}, c;
++
++  snapshot();
++  int nfile = info.nfile, nproc = info.nproc;
++  check(pipe(ready) == 0 && pipe(gate) == 0, "file table test pipes");
++  snapshot();
++  int baseline = info.nfile;
++  // Workers retain their opens until the parent finishes inspecting the full table.
++  while(info.nfile < NFILE){
++    check(workers < NPROC, "too many file table workers");
++    int pid = fork();
++    check(pid >= 0, "fork file table worker");
++    if(pid == 0){
++      close(ready[0]);
++      close(gate[1]);
++      int n = 0;
++      while(open("README", O_RDONLY) >= 0)
++        n++;
++      check(write(ready[1], &n, sizeof(n)) == sizeof(n), "report worker opens");
++      check(read(gate[0], &c, 1) == 1, "release file table worker");
++      exit(0);
++    }
++    pids[workers] = pid;
++    check(read(ready[0], &counts[workers], sizeof(int)) == sizeof(int), "receive worker opens");
++    opened += counts[workers++];
++    snapshot();
++    expect("global count matches completed opens", info.nfile, baseline + opened);
++    check(counts[workers - 1] > 0, "worker made no progress toward NFILE");
++  }
++  snapshot();
++  expect("global open objects", info.nfile, NFILE);
++  expect("process count after worker forks", info.nproc, nproc + workers);
++  for(int i = 0; i < workers; i++){
++    struct procinfo *p = process(pids[i]);
++    int listed = 0;
++    check(p->ppid == getpid(), "file worker parent PID");
++    for(int fd = 0; fd < NOFILE; fd++){
++      int id = p->file_id[fd];
++      if(id == 0 || holds(process(getpid()), id))
++        continue;
++      struct fileinfo *f = &info.files[id - 1];
++      check(f->type == FD_INODE && f->readable && !f->writable &&
++            f->ref == 1 && owners(id) == 1, "worker file metadata or owner");
++      listed++;
++    }
++    expect("worker's listed independent opens", listed, counts[i]);
++  }
++  int used = 0;
++  for(int fd = 0; fd < NOFILE; fd++)
++    used += process(getpid())->file_id[fd] != 0;
++  check(used < NOFILE, "parent needs a free descriptor for global limit test");
++  expect("open with full global table", open("README", O_RDONLY), -1);
++  int extra[2];
++  expect("pipe with full global table", pipe(extra), -1);
++  int id = fileid(ready[0]), refs = info.files[id - 1].ref;
++  int copy = dup(ready[0]);
++  check(copy >= 0, "dup must work with full global file table");
++  snapshot();
++  expect("dup file ID", fileid(copy), id);
++  expect("pipe references after dup", info.files[id - 1].ref, refs + 1);
++  expect("global objects after failed allocations and dup", info.nfile, NFILE);
++  close(copy);
++  check(write(gate[1], tokens, workers) == workers, "release file table workers");
++  close(gate[1]);
++  for(int i = 0; i < workers; i++)
++    check(wait(&status) > 0 && status == 0, "wait file table worker");
++  close(ready[0]);
++  close(ready[1]);
++  close(gate[0]);
++  snapshot();
++  expect("open objects after cleanup", info.nfile, nfile);
++  expect("process count after cleanup", info.nproc, nproc);
++  passed();
++}
++
++static void
++testproctable(void)
++{
++  group("[1.10] fill process table; reap one child and reuse its capacity");
++  int gate[2], pids[NPROC], n = 0, status;
++  char tokens[NPROC] = {0}, c;
++
++  snapshot();
++  int nproc = info.nproc, nfile = info.nfile;
++  check(pipe(gate) == 0, "process table gate");
++  while(n < NPROC){
++    int pid = fork();
++    if(pid < 0)
++      break;
++    if(pid == 0){
++      close(gate[1]);
++      check(read(gate[0], &c, 1) == 1, "release process table child");
++      exit(0);
++    }
++    pids[n++] = pid;
++  }
++  snapshot();
++  expect("successful forks", n, NPROC - nproc);
++  expect("occupied process slots", info.nproc, NPROC);
++  expect("new file objects (one shared pipe)", info.nfile, nfile + 2);
++  expect("fork with all slots occupied", fork(), -1);
++  int id = fileid(gate[0]);
++  expect("PIDs holding the shared read end", owners(id), n + 1);
++  for(int i = 0; i < n; i++){
++    struct procinfo *p = process(pids[i]);
++    check(p->ppid == getpid() && p->file_id[gate[0]] == id, "full table child details");
++  }
++  check(write(gate[1], "g", 1) == 1, "release one process slot");
++  int reaped = wait(&status);
++  check(reaped > 0 && status == 0, "wait one process table child");
++  snapshot();
++  expect("processes after one wait", info.nproc, NPROC - 1);
++  check(findproc(reaped) == 0, "reaped PID absent from full table");
++  int replacement = fork();
++  check(replacement >= 0, "fork after freeing one process slot");
++  if(replacement == 0){
++    close(gate[1]);
++    check(read(gate[0], &c, 1) == 1, "release replacement child");
++    exit(0);
++  }
++  snapshot();
++  expect("occupied process slots after replacement", info.nproc, NPROC);
++  expect("replacement's parent PID", process(replacement)->ppid, getpid());
++  check(replacement != reaped, "replacement has a new PID");
++  check(write(gate[1], tokens, n) == n, "release remaining process table children");
++  close(gate[1]);
++  for(int i = 0; i < n; i++)
++    check(wait(&status) > 0 && status == 0, "wait process table child");
++  close(gate[0]);
++  snapshot();
++  expect("process count after cleanup", info.nproc, nproc);
++  expect("open objects after cleanup", info.nfile, nfile);
++  passed();
++}
++
++static void
++testreparent(void)
++{
++  group("[1.11] parent exits; observe child adoption by init");
++  int report[2], leave[2], hold[2], orphan, status;
++  char c;
++
++  snapshot();
++  int nproc = info.nproc, nfile = info.nfile;
++  check(pipe(report) == 0 && pipe(leave) == 0 && pipe(hold) == 0, "reparent test pipes");
++  int parent = fork();
++  check(parent >= 0, "fork orphan's parent");
++  if(parent == 0){
++    close(report[0]);
++    close(leave[1]);
++    close(hold[1]);
++    int pid = fork();
++    check(pid >= 0, "fork future orphan");
++    if(pid == 0){
++      close(leave[0]);
++      check(read(hold[0], &c, 1) == 1, "release adopted child");
++      snapshot();
++      int ppid = process(getpid())->ppid;
++      check(ppid == 1, "adopted child's own parent PID");
++      check(write(report[1], &ppid, sizeof(ppid)) == sizeof(ppid), "report adopted parent PID");
++      exit(0);
++    }
++    close(hold[0]);
++    check(write(report[1], &pid, sizeof(pid)) == sizeof(pid), "report future orphan PID");
++    close(report[1]);
++    check(read(leave[0], &c, 1) == 1, "release orphan's parent");
++    exit(0);
++  }
++  close(report[1]);
++  close(leave[0]);
++  close(hold[0]);
++  check(read(report[0], &orphan, sizeof(orphan)) == sizeof(orphan), "receive future orphan PID");
++  struct procinfo *child = awaitstate(orphan, SLEEPING);
++  expect("process count before parent exit", info.nproc, nproc + 2);
++  expect("child's original parent PID", child->ppid, parent);
++  expect("intermediate parent's parent PID", process(parent)->ppid, getpid());
++  check(write(leave[1], "g", 1) == 1, "let orphan's parent exit");
++  close(leave[1]);
++  expect("wait returned parent PID", wait(&status), parent);
++  expect("parent exit status", status, 0);
++  child = awaitstate(orphan, SLEEPING);
++  expect("orphan's new parent PID", child->ppid, 1);
++  expect("process count after parent's wait", info.nproc, nproc + 1);
++  check(findproc(parent) == 0, "old parent has been reaped");
++  int replacement = fork();
++  check(replacement >= 0, "fork after orphan's parent was reaped");
++  if(replacement == 0)
++    exit(0);
++  snapshot();
++  expect("orphan's parent stays init", process(orphan)->ppid, 1);
++  expect("new child's parent PID", process(replacement)->ppid, getpid());
++  expect("wait returned new child PID", wait(&status), replacement);
++  expect("new child exit status", status, 0);
++  check(write(hold[1], "g", 1) == 1, "release orphan");
++  close(hold[1]);
++  int ppid;
++  check(read(report[0], &ppid, sizeof(ppid)) == sizeof(ppid), "receive adopted parent PID");
++  expect("parent PID reported by orphan", ppid, 1);
++  close(report[0]);
++  // Only init can wait for the adopted child; observe its removal instead.
++  for(int i = 0; i < 100; i++){
++    snapshot();
++    if(findproc(orphan) == 0)
++      break;
++    sleep(1);
++  }
++  check(findproc(orphan) == 0, "init did not reap adopted child before deadline");
++  expect("process count after init's wait", info.nproc, nproc);
++  expect("open objects after cleanup", info.nfile, nfile);
++  passed();
++}
++
++static int
++freepages(void)
++{
++  snapshot();
++  return info.freemem / PGSIZE;
++}
++
++static void
++testmem(void)
++{
++  group("[1.2] free memory: sbrk, pipe, fork/wait and exhaustion");
++  enum
++  {
++    N = 16
++  };
++  int p[2], gate[2], status;
++  char c;
++
++  int base = freepages();
++
++  char *mem = sbrk(N * PGSIZE);
++  check(mem != (char *)-1, "sbrk grow");
++  for (int i = 0; i < N; i++)
++    mem[i * PGSIZE] = 1;
++  int grown = freepages();
++  // Page-table pages may be needed too, so allow a few extra pages.
++  record("sbrk grow: requested pages", N);
++  record("sbrk grow: free pages before", base);
++  record("sbrk grow: free pages after", grown);
++  range("sbrk grow: pages consumed", base - grown, N, N + 3);
++
++  check(sbrk(-N * PGSIZE) != (char *)-1, "sbrk shrink");
++  int shrunk = freepages();
++  expect("pages returned by sbrk shrink", shrunk - grown, N);
++
++  check(pipe(p) == 0, "create pipe");
++  expect("pages used by pipe", shrunk - freepages(), 1);
++  close(p[0]);
++  close(p[1]);
++  expect("free pages after closing pipe", freepages(), shrunk);
++
++  int before = freepages();
++  check(pipe(gate) == 0, "memory test pipe");
++  int pid = fork();
++  check(pid >= 0, "fork memory child");
++  if (pid == 0)
++  {
++    close(gate[1]);
++    check(read(gate[0], &c, 1) == 1, "release memory child");
++    exit(0);
++  }
++  close(gate[0]);
++  int withchild = freepages();
++  record("fork + pipe: child PID", pid);
++  record("fork + pipe: free pages before", before);
++  record("fork + pipe: free pages after", withchild);
++  record("fork + pipe: pages consumed (>=4)", before - withchild);
++  check(before - withchild >= 4, "child and pipe consume memory");
++  check(write(gate[1], "g", 1) == 1, "release memory child");
++  close(gate[1]);
++  expect("wait returned PID", wait(&status), pid);
++  expect("exit status", status, 0);
++  expect("free pages after child is reaped (no leak)", freepages(), before);
++
++  table_open = 0;
++  pid = fork();
++  check(pid >= 0, "fork memory exhaustion child");
++  if(pid == 0){
++    int pages = 0;
++    while(sbrk(PGSIZE) != (char *)-1)
++      pages++;
++    snapshot();
++    record("exhaustion: child PID", getpid());
++    record("exhaustion: allocated pages", pages);
++    expect("exhaustion: free bytes", info.freemem, 0);
++    check(info.freemem == 0, "zero free bytes after memory exhaustion");
++    check(sbrk(-pages * PGSIZE) != (char *)-1, "release exhausted memory");
++    snapshot();
++    record("release: returned pages", pages);
++    record("release: free bytes (must be >0)", info.freemem);
++    check(info.freemem > 0, "free memory recovers after release");
++    exit(0);
++  }
++  expect("wait returned exhaustion child PID", wait(&status), pid);
++  expect("memory exhaustion child exit status", status, 0);
++  expect("free pages after exhaustion child exits", freepages(), before);
++  passed();
++}
++
++static void
++test_sysinfo(void)
++{
++  group("[1.1] sysinfo arguments and initial snapshot");
++  expect("sysinfo(NULL)", sysinfo(0), -1);
++  expect("sysinfo(invalid address)", sysinfo((struct sysinfo *)~(uint64)0), -1);
++  snapshot();
++  record("caller PID", getpid());
++  record("free physical memory (bytes)", info.freemem);
++  record("open file objects", info.nfile);
++  record("process count", info.nproc);
++  passed();
++  testmem();
++  testfiles();
++  testpipe();
++  testlimits();
++  testfork();
++  testowners();
++  testconcurrent();
++  testfiletable();
++  testproctable();
++  testreparent();
++}
++
++static volatile char *pages;
++static uint mask;
++
++static void
++expectmask(char *label, uint actual, uint expected)
++{
++  row(label);
++  hex(actual);
++  printf(" │ ");
++  hex(expected);
++  printf(" │\n");
++  check(actual == expected, label);
++}
++
++static uint
++sample(int n)
++{
++  mask = ~0U;
++  check(pgaccess((void *)pages, n, &mask) == 0, "sample mapped pages");
++  return mask;
++}
++
++static void
++reject(void *start, int n, uint *out, char *message)
++{
++  sample(32);
++  pages[31 * PGSIZE] = 1;
++  int ret = pgaccess(start, n, out);
++  uint remaining = sample(32);
++  if(!table_open){
++    printf("  Expected for every row: return=-1; remaining A=0x80000000.\n");
++    printf("  │ Case                       │ Start              │ N   │ Output             │ Ret │ Remaining A │\n");
++    printf("  ├────────────────────────────┼────────────────────┼─────┼────────────────────┼─────┼─────────────┤\n");
++    table_open = 1;
++  }
++  printf("  │ ");
++  cell(message, 26);
++  printf(" │ %p │ ", start);
++  number(n, 3);
++  printf(" │ %p │ ", out);
++  number(ret, 3);
++  printf(" │ ");
++  hex(remaining);
++  printf("  │\n");
++  check(ret == -1, message);
++  check(remaining == (1U << 31), "failed call preserves access bits");
++}
++
++static void
++test_pgaccess(void)
++{
++  group("[2.1] pgaccess: read/write detection and reset between samples");
++  char *mem = sbrk(34 * PGSIZE);
++  check(mem != (char *)-1, "allocate test pages");
++  check((uint64)mem % PGSIZE == 0, "test allocation is page aligned");
++  pages = mem;
++  for(int i = 0; i < 32; i++)
++    pages[i * PGSIZE] = i;
++  sample(32);
++  printf("    region=%p; sample count=32; initial A bits cleared\n", mem);
++
++  expectmask("untouched pages", sample(32), 0);
++  check(pages[PGSIZE] == 1, "read test page");
++  pages[3 * PGSIZE] = 9;
++  expectmask("read page 1 and write page 3", sample(32), (1U << 1) | (1U << 3));
++  expectmask("sample clears accessed bits", sample(32), 0);
++  check(pages[3 * PGSIZE] == 9, "read page again");
++  expectmask("access is detected again after clearing", sample(32), 1U << 3);
++  passed();
++
++  group("[2.2] pgaccess: all 32 bits and exact result size");
++  for(int i = 0; i < 32; i++)
++    pages[i * PGSIZE] = i;
++  expectmask("all 32 pages accessed", sample(32), ~0U);
++  pages[31 * PGSIZE] = 1;
++  struct {
++    uint before, result, after;
++  } bounded = {0x12345678, 0, 0x87654321};
++  check(pgaccess(mem, 32, &bounded.result) == 0, "32-page sample");
++  expectmask("highest mask bit", bounded.result, 1U << 31);
++  expectmask("result guard: before", bounded.before, 0x12345678);
++  expectmask("result guard: after", bounded.after, 0x87654321);
++  check(bounded.before == 0x12345678 && bounded.after == 0x87654321,
++        "result writes exactly four bytes");
++
++  passed();
++  group("[2.3] pgaccess: zero count, unaligned start and read-only input");
++  pages[PGSIZE] = 1;
++  expectmask("zero pages returns zero mask", sample(0), 0);
++  expectmask("zero count preserves accessed bits", sample(32), 1U << 1);
++  pages[2 * PGSIZE] = 1;
++  int ret = pgaccess(mem + 2 * PGSIZE + 7, 1, &mask);
++  record("start offset within page (bytes)", 7);
++  expect("unaligned start: syscall return", ret, 0);
++  expectmask("unaligned start: mask", mask, 1);
++  check(ret == 0 && mask == 1, "unaligned start selects its containing page");
++  expect("read-only user text (VA=0)", pgaccess(0, 1, &mask), 0);
++  passed();
++
++  group("[2.4] pgaccess: invalid counts, ranges and protected pages");
++
++  reject(mem, -1, &mask, "negative page count");
++  reject(mem, 33, &mask, "page count above 32");
++  reject((void *)MAXVA, 1, &mask, "address at MAXVA");
++  reject((void *)~(uint64)0, 1, &mask, "address overflow");
++  reject((void *)(MAXVA - PGSIZE), 2, &mask, "range exceeds MAXVA");
++  reject(mem + 34 * PGSIZE, 1, &mask, "unmapped page");
++  reject(mem + 31 * PGSIZE, 4, &mask, "partially mapped range");
++  uint64 guard = PGROUNDDOWN(r_sp()) - USERSTACK * PGSIZE;
++  reject((void *)guard, 1, &mask, "stack guard page");
++  reject((void *)TRAPFRAME, 1, &mask, "supervisor trapframe");
++  reject((void *)TRAMPOLINE, 1, &mask, "supervisor trampoline");
++
++  passed();
++  group("[2.5] pgaccess: invalid result buffers preserve access bits");
++  reject(mem, 32, 0, "read-only output buffer");
++  reject(mem, 32, (uint *)MAXVA, "output at MAXVA");
++  reject(mem, 32, (uint *)~(uint64)0, "invalid output address");
++  reject(mem, 32, (uint *)TRAPFRAME, "supervisor output buffer");
++  reject(mem, 32, (uint *)(mem + 34 * PGSIZE - 2), "partially writable output");
++
++  passed();
++  group("[2.6] pgaccess: result spans two writable pages");
++  pages[7 * PGSIZE] = 1;
++  char *cross = mem + 33 * PGSIZE - 2;
++  printf("    output buffer=%p\n", cross);
++  record("output: offset within page", (uint64)cross % PGSIZE);
++  record("output: size in bytes", sizeof(mask));
++  expect("cross-page pgaccess return", pgaccess(mem, 32, (uint *)cross), 0);
++  memmove(&mask, cross, sizeof(mask));
++  expectmask("cross-page result", mask, 1U << 7);
++  expectmask("cross-page output clears access bits", sample(32), 0);
++  check(sbrk(-34 * PGSIZE) != (char *)-1, "release test pages");
++  passed();
++}
++
++int
++main(void)
++{
++  completed = 0;
++  table_open = 0;
++  printf("\nProject 2 │ Memory tests │ 17 groups\n");
++
++  printf("\n[1/2] SYSINFO - free physical memory (11 groups)\n");
++  note("Expected '-' is context; snapshot bounds are checked separately.");
++  note("1.2 checks freemem; 1.3..1.11 check file/process regressions.");
++  test_sysinfo();
++  printf("\n[2/2] PGACCESS - accessed pages (6 groups)\n");
++  note("Bit i represents page i (starting at 0); this implementation scans at most 32 pages.");
++  test_pgaccess();
++
++  expect("completed groups", completed, 17);
++  printf("\nRESULT: assertions passed in %d/17 groups.\n", completed);
++  note("Run ./project2test.py on Linux to include exec and page-table output checks.");
++  exit(0);
++}
+diff --git a/user/vmwide.c b/user/vmwide.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..6e79c072bd9602031e26d2221e824033e4003e90
+--- /dev/null
++++ b/user/vmwide.c
+@@ -0,0 +1,16 @@
++#include "kernel/types.h"
++#include "user/user.h"
++
++// Cross a 2 MiB boundary so exec needs more than one lowest-level table.
++static volatile char data[2 * 1024 * 1024 + 4096];
++
++int
++main(void)
++{
++  data[0] = 17;
++  data[sizeof(data) - 1] = 23;
++  if(data[0] != 17 || data[sizeof(data) - 1] != 23)
++    exit(1);
++  printf("VMWIDE OK\n");
++  exit(0);
++}
