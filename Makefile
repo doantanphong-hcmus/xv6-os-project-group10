@@ -196,9 +196,9 @@ UPROGS=\
 	$U/_wc\
 	$U/_zombie\
 	$U/_sysinfotest\
+	$U/_project2test\
 	$U/_vmshow\
 	$U/_vmprinttest\
-	$U/_pgaccesstest\
 
 
 
