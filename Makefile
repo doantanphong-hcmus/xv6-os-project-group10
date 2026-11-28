@@ -197,8 +197,9 @@ UPROGS=\
 	$U/_zombie\
 	$U/_sysinfotest\
 	$U/_project2test\
+	$U/_execbadtest\
+	$U/_vmwide\
 	$U/_vmshow\
-	$U/_vmprinttest\
 
 
 
